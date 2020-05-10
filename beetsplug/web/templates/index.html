@@ -1,328 +1,1523 @@
 <!DOCTYPE html>
-<html>
-    <head>
-        <meta charset='utf-8'>
-        <title>beets</title>
+<html lang="en" >
+	<head>
+		<meta charset="UTF-8">
+		<title>Beets</title>
+		<link rel="icon" type="image/png" href="{{ url_for('static', filename='favico.png') }}">
+		<link rel='stylesheet' href="{{ url_for('static', filename='css/css.css') }}">
+		<link rel='stylesheet' href="{{ url_for('static', filename='css/bootstrap.css') }}">
+		<link rel='stylesheet' href="{{ url_for('static', filename='css/font-awesome.css') }}">
+		<link rel='stylesheet' href="{{ url_for('static', filename='css/ionicons.css') }}">
+		<link rel='stylesheet' href="{{ url_for('static', filename='css/nouislider.css') }}">
+		<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 
-        <link rel="icon" type="image/png" href="/static/img/favico.png">
-        <link rel="stylesheet" href="{{ url_for('static', filename='css/bootstrap.min.css') }}" type="text/css">
-        <link rel="stylesheet" href="{{ url_for('static', filename='fa/css/all.css') }}" type="text/css">
-        <link rel="stylesheet" href="{{ url_for('static', filename='css/beets.css') }}" type="text/css">
-    </head>
-    <body>
-      <div id='app'></div>
+	</head>
+	<body>
+		<!-- partial:index.partial.html -->
+		<section class="header">
 
-      <script id='tpl-app-view' type='text/template'>
-        <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top flex-md-nowrap p-0">
-            <a class="navbar-brand col-sm-3 col-md-2 mr-0" href="#">
-              <img alt="Beets" width=30 height=30 src='/static/img/logo.png'/>
-              Beets
-            </a>
-              <span class="w-100 bg-light p-0" id='nowPlaying'></span>
-        </nav>
-        <div class='container-fluid'>
-          <div class='row'>
-            <nav id="sidebar" class="col-md-2 d-none d-md-block bg-light sidebar"></nav>
-            <main id='main' role="main" class="col-md-9 ml-sm-auto col-lg-10 pt-3 px-4">
-            </main>
-          </div>
-        </div>
-      </script>
+			<div class="page-flows">
 
-      <script id='tpl-item-view' type='text/template'>
-        <div class="row">
-          <div class="col">
-            <%= track %>. <%= title %> <small>(<%= artist %>)</small>
-          </div>
-          <div class="col">
-            <div class="btn-group" role="group">
-              <button class="btn btn-sm btn-secondary play-button">
-                <i class="fa fa-play"></i>
-                Play
-              </button>
-              <button class="btn btn-sm btn-secondary add-button">
-                <i class="fa fa-plus"></i>
-                Queue
-              </button>
-              <button class="btn btn-sm btn-secondary info-button">
-                <i class="fa fa-info"></i>
-                Details
-              </button>
-            </div>
-          </div>
-        </div>
-      </script>
-      <script id='tpl-item-detail-view' type='text/template'>
-        <h3>Track Info</h3>
-        <dl class="row">
-            <dt class="col-sm-3">Artist</dt>
-            <dd class="col-sm-9"><%= artist %></dd>
+				<span class="flow">
+					<i class="ion-chevron-left"></i>
+				</span>
 
-            <dt class="col-sm-3">Album</dt>
-            <dd class="col-sm-9"><a href="/#album/<%= album_id %>"><%= album %></a> (<%= year %>)</dd>
+				<span class="flow">
+					<i class="ion-chevron-right disabled"></i>
+				</span>
 
-            <dt class="col-sm-3">Title</dt>
-            <dd class="col-sm-9"><%= title %></dd>
+			</div>
 
-            <dt class="col-sm-3">Track</dt>
-            <dd class="col-sm-9"><%= track %>/<%= tracktotal %></dd>
-            <% if (disc) { %>
-                <dt class="col-sm-3">Disc</dt>
-                <dd class="col-sm-9"><%= disc %>/<%= disctotal %></dd>
-            <% } %>
-            <dt class="col-sm-3">Length</dt>
-            <dd class="col-sm-9"><%= time %></dd>
-            <dt class="col-sm-3">Format</dt>
-            <dd class="col-sm-9"><%= format %></dd>
-            <dt class="col-sm-3">Bitrate</dt>
-            <dd class="col-sm-9"><%= Math.round(bitrate/1000) %> kbps</dd>
-            <% if (mb_trackid) { %>
-                <dt class="col-sm-3">MusicBrainz entry</dt>
-                <dd class="col-sm-9">
-                    <a target="_blank" href="https://musicbrainz.org/recording/<%= mb_trackid %>">view</a>
-                </dd>
-            <% } %>
-            <dt class="col-sm-3">File</dt>
-            <dd class="col-sm-9">
-                <a target="_blank" class="download" href="/item/<%= id %>/file">download</a>
-            </dd>
-            <% if (lyrics) { %>
-                <dt class="col-sm-3">Lyrics</dt>
-                <dd class="col-sm-9 lyrics"><%= lyrics %></dd>
-            <% } %>
-            <% if (comments) { %>
-                <dt class="col-sm-3">Comments</dt>
-                <dd class="col-sm-9 lyrics"><%= comments %></dd>
-            <% } %>
-        </dl>
-      </script>
-      <script id='tpl-item-list-view' type='text/template'>
-        <h3>Tracks</h3>
-        <ol class="list-group js-widgets"></ol>
-      </script>
+			<div class="search">
 
-      <script id='tpl-search-view' type='text/template'>
-        <h2>Search</h2>
-        <form class="form-inline">
-          <div class="input-group mb-2 mr-sm-2">
-            <input type="text" class="form-control" id="query" placeholder="Enter query" />
-          </div>
-          <button type="submit" class="btn btn-primary mb-2">
-            <i class="fa fa-search"></i>&nbsp;
-            Search
-          </button>
-        </form>
-      </script>
-      <script id='tpl-sidebar-view' type='text/template'>
-        <ul class="nav flex-column">
-          <li class="nav-item">
-            <a class="nav-link active search-link" href="#search">
-              <i class="fa fa-search"></i>&nbsp;
-              Search
-            </a>
-          </li>
-          <li class="nav-item ">
-            <a class="nav-link queue-link" href="#queue">
-              <i class="fa fa-music"></i>
-              Queue
-              <span class="badge badge-primary"><%= queue_size %></span>
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link albums-link" href="#albums">
-              <i class="fa fa-compact-disc"></i>
-              Albums
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link stats-link" href="#stats">
-              <i class="fa fa-digital-tachograph"></i>
-              Stats
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link artists-link" href="#artists">
-              <i class="fa fa-user"></i>
-              Artists
-            </a>
-          </li>
+				<input type="text" placeholder="Search" />
 
-        </ul>
-        <div id='savedplaylists'></div>
-      </script>
-      <script id='tpl-savedplaylist-view' type='text/template'>
-        <h6 class="sidebar-heading d-flex justify-content-between align-items-center px-3 mt-4 mb-1 text-muted">
-          <span>Saved Playlists</span>
-          <a class="d-flex align-items-center text-muted" href="#">
-            <span data-feather="plus-circle"></span>
-          </a>
-        </h6>
-        <ul class="nav flex-column mb-2">
-          <li class="nav-item">
-            <a class="nav-link" href="#">
-              <span data-feather="file-text"></span>
-              Playlist 1
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="#">
-              <span data-feather="file-text"></span>
-              Playlist 2
-            </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="#">
-              <span data-feather="file-text"></span>
-              Playlist 3
-            </a>
-          </li>
-        </ul>
-      </script>
-      <script id='tpl-album-list-view' type='text/template'>
-        <h2>Albums</h2>
-        <ol class="js-widgets list-group"></ol>
-      </script>
-      <script id='tpl-album-view' type='text/template'>
-        <div class="row">
-          <div class="col">
-            <i class="fa fa-compact-disc"></i>
-            <%= album %><br><small><%= albumartist %> (<%= year %>)</small>
-          </div>
-          <div class="col">
-            <div class="btn-group" role="group" aria-label="Album Control Buttons">
-              <a href="/#album/<%= id %>" class="info-button btn btn-sm btn-secondary">
-                <i class="fa fa-info"></i>
-                Details
-              </a>
-              <button class="add-button btn btn-sm btn-secondary">
-                <i class="fa fa-plus"></i>
-                Queue
-              </button>
-            </div>
-          </div>
-        </div>
-      </script>
-      <script id='tpl-album-detail-view' type='text/template'>
-        <h2>Album Detail</h2>
-        <dl class="row">
-          <dt class="col-sm-3">Album</dt>
-          <dd class="col-sm-9"><%= album %></dd>
+			</div>
 
-          <dt class="col-sm-3">Album Artist</dt>
-          <dd class="col-sm-9"><%= albumartist %></dd>
+			<div class="user">
 
-          <dt class="col-sm-3">Genre</dt>
-          <dd class="col-sm-9"><%= genre %></dd>
+				<div class="user__notifications">
 
-          <dt class="col-sm-3">Year</dt>
-          <dd class="col-sm-9"><%= year %></dd>
+					<i class="ion-android-notifications"></i>
 
-          <dt class="col-sm-3">Label</dt>
-          <dd class="col-sm-9"><%= label %></dd>
+				</div>
 
-          <dt class="col-sm-3">Language</dt>
-          <dd class="col-sm-9"><%= language %></dd>
-        </dl>
-        <div id="tracks-region"></div>
-      </script>
-      <script id='tpl-search-item-view' type='text/template'>
-        <div class="row">
-          <div class="col">
-            <%= track %>. <%= artist %> - <%= title %><br><small><%= album %> (<%= year %>)</small>
-          </div>
-          <div class="col">
-            <div class="btn-group" role="group">
-              <button class="btn btn-sm btn-secondary play-button">
-                <i class="fa fa-play"></i>
-                Play
-              </button>
-              <button class="btn btn-sm btn-secondary add-button">
-                <i class="fa fa-plus"></i>
-                Queue
-              </button>
-              <button class="btn btn-sm btn-secondary info-button">
-                <i class="fa fa-info"></i>
-                Details
-              </button>
-            </div>
-          </div>
-        </div>
-      </script>
-      <script id="tpl-nowplaying-timing-view" type='text/template'>
-        <%= currentTime %>/<%= time %>
-      </script>
-      <script id='tpl-nowplaying-view' type='text/template'>
-        <div class="btn-group" role="group">
-          <button class="btn btn-sm btn-secondary stop-icon">
-            <i class="fa fa-stop"></i> Stop
-          </button>
-          <button class="btn btn-sm btn-secondary play-icon active">
-            <i class="fa fa-play"></i> Play
-          </button>
-          <button class="btn btn-sm btn-secondary pause-icon">
-            <i class="fa fa-pause"></i> Pause
-          </button>
-          <button class="btn btn-sm btn-secondary forward-icon">
-            <i class="fa fa-forward"></i> Forward
-          </button>
-          <button class="btn btn-sm btn-secondary info-icon">
-            <i class="fa fa-info"></i> Details
-          </button>
-        </div>
-        <span class='time-area typewriter'></span>
-        <%= title %> <small>(<%= artist %>)</small>
-      </script>
-      <script id='tpl-queue-list-view' type='text/template'>
-        <h2>Queue <i class="fa fa-play play-icon"></i></h2>
+				<div class="user__inbox">
 
-        <ol class="js-widgets"></ol>
-      </script>
-      <script id='tpl-queue-empty-view' type='text/template'>
-        <h3>Oops. Empty Queue</h3>
-        <p>Add some tracks by clicking the plus icon from the results of a search</p>
-      </script>
-      <script id='tpl-queue-item-view' type='text/template'>
-        <div class="row">
-          <div class="col">
-            <%= title %> <small>(<%= artist %>)</small>
-          </div>
-          <div class="col">
-            <div class="btn-group" role="group">
-              <button class="btn btn-sm btn-secondary play-button">
-                <i class="fa fa-play"></i>
-                Play
-              </button>
-              <button class="btn btn-sm btn-secondary info-button">
-                <i class="fa fa-info"></i>
-                Details
-              </button>
-            </div>
-          </div>
-        </div>
-      </script>
-      <script id='tpl-stats-view' type='text/template'>
-        <h2>Stats</h2>
-        <dl>
-          <dt>Albums</dt>
-          <dd><%= albums %></dd>
-          <dt>Tracks</dt>
-          <dd><%= items %></td>
-        </dl>
-      </script>
-      <script id="tpl-artist-view" type="text/template">
-        <%= name %>
-      </script>
-      <script id='tpl-artist-list-view' type='text/template'>
-        <h2>Artists <i class="fa fa-user"></i></h2>
-        <ol class="js-widgets"></ol>
-      </script>
+					<i class="ion-archive"></i>
 
-      <script src="{{ url_for('static', filename='js/jquery.min.js') }}"></script>
-      <script src="{{ url_for('static', filename='js/underscore-min.js') }}"></script>
-      <script src="{{ url_for('static', filename='js/backbone-min.js') }}"></script>
-      <script src="{{ url_for('static', filename='js/backbone.marionette.min.js') }}"></script>
-      <script src="{{ url_for('static', filename='js/howler.min.js') }}"></script>
-      <script type="module" src="{{ url_for('static', filename='js/beets.js') }}"></script>
+				</div>
 
-    </body>
+				<div class="user__info">
+
+					<span class="user__info__img">
+
+						<img src="{{ url_for('static', filename='adam_proPic.jpg') }}" alt="Profile Picture" class="img-responsive" />
+
+					</span>
+
+					<span class="user__info__name">
+
+						<span class="first">Adam</span>
+
+						<span class="last">Lowenthal</span>
+
+					</span>
+
+				</div>
+
+				<div class="user__actions">
+
+					<div class="dropdown">
+						<button class="dropdown-toggle" type="button" id="dropdownMenu1" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+							<i class="ion-chevron-down"></i>
+						</button>
+						<ul class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenu1">
+							<li><a href="#">Private Session</a></li>
+							<li><a href="#">Account</a></li>
+							<li><a href="#">Settings</a></li>
+							<li><a href="#">Log Out</a></li>
+						</ul>
+					</div>
+
+				</div>
+
+			</div>
+
+		</section>
+
+		<section class="content">
+
+			<div class="content__left">
+
+				<section class="navigation">
+
+					<!-- Main -->
+					<div class="navigation__list">
+
+						<div class="navigation__list__header" role="button" data-toggle="collapse" href="#main" aria-expanded="true" aria-controls="main">Main</div>
+
+						<div class="collapse in" id="main">
+
+							<a href="#browse" class="navigation__list__item">
+								<i class="ion-ios-browsers"></i>
+								<span>Browse</span>
+							</a>
+
+							<a href="#activity" class="navigation__list__item">
+								<i class="ion-person-stalker"></i>
+								<span>Activity</span>
+							</a>
+
+							<a href="#radio" class="navigation__list__item">
+								<i class="ion-radio-waves"></i>
+								<span>Radio</span>
+							</a>
+
+						</div>
+
+					</div>
+					<!-- / -->
+
+					<!-- Your Music -->
+					<div class="navigation__list">
+
+						<div class="navigation__list__header" role="button" data-toggle="collapse" href="#yourMusic" aria-expanded="true" aria-controls="yourMusic">Your Music</div>
+
+						<div class="collapse in" id="yourMusic">
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-headphone"></i>
+								<span>Songs</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Albums</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-person"></i>
+								<span>Artists</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-document"></i>
+								<span>Local Files</span>
+							</a>
+
+						</div>
+
+					</div>
+					<!-- / -->
+
+					<!-- Playlists -->
+					<div class="navigation__list">
+
+						<div class="navigation__list__header" role="button" data-toggle="collapse" href="#playlists" aria-expanded="true" aria-controls="playlists">Playlists</div>
+
+						<div class="collapse in" id="playlists">
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Doo Wop</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Pop Classics</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Love $ongs</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Hipster</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>New Music Friday</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Techno Poppers</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Summer Soothers</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Hard Rap</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Pop Rap</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>5 Stars</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Dope Dancin</span>
+							</a>
+
+							<a href="#" class="navigation__list__item">
+								<i class="ion-ios-musical-notes"></i>
+								<span>Sleep</span>
+							</a>
+
+						</div>
+
+					</div>
+					<!-- / -->
+
+				</section>
+
+				<section class="playlist">
+
+					<a href="#">
+
+						<i class="ion-ios-plus-outline"></i>
+
+						New Playlist
+
+					</a>
+
+				</section>
+
+				<section class="playing">
+
+					<div class="playing__art">
+
+						<img src="{{ url_for('static', filename='cputh.jpg') }}" alt="Album Art" />
+
+					</div>
+
+					<div class="playing__song">
+
+						<a class="playing__song__name">Some Type of Love</a>
+
+						<a class="playing__song__artist">Charlie Puth</a>
+
+					</div>
+
+					<div class="playing__add">
+
+						<i class="ion-checkmark"></i>
+
+					</div>
+
+				</section>
+
+			</div>
+
+			<div class="content__middle">
+
+				<div class="artist is-verified">
+
+					<div class="artist__header">
+
+						<div class="artist__info">
+
+							<div class="profile__img">
+
+								<img src="{{ url_for('static', filename='g_eazy_propic.jpg') }}" alt="G-Eazy" />
+
+							</div>
+
+							<div class="artist__info__meta">
+
+								<div class="artist__info__type">Artist</div>
+
+								<div class="artist__info__name">G-Eazy</div>
+
+								<div class="artist__info__actions">
+
+									<button class="button-dark">
+										<i class="ion-ios-play"></i>
+										Play
+									</button>
+
+									<button class="button-light">Follow</button>
+
+									<button class="button-light more">
+										<i class="ion-ios-more"></i>
+									</button>
+
+								</div>
+
+							</div>
+
+
+						</div>
+
+						<div class="artist__listeners">
+
+							<div class="artist__listeners__count">15,662,810</div>
+
+							<div class="artist__listeners__label">Monthly Listeners</div>
+
+						</div>
+
+						<div class="artist__navigation">
+
+							<ul class="nav nav-tabs" role="tablist">
+
+								<li role="presentation" class="active">
+									<a href="#artist-overview" aria-controls="artist-overview" role="tab" data-toggle="tab">Overview</a>
+								</li>
+
+								<li role="presentation">
+									<a href="#related-artists" aria-controls="related-artists" role="tab" data-toggle="tab">Related Artists</a>
+								</li>
+
+								<!--<li role="presentation">
+		<a href="#artist-about" aria-controls="artist-about" role="tab" data-toggle="tab">About</a>
+		</li>-->
+
+							</ul>
+
+							<div class="artist__navigation__friends">
+
+								<a href="#">
+									<img src="{{ url_for('static', filename='17.jpg') }}" alt="" />
+								</a>
+
+								<a href="#">
+									<img src="{{ url_for('static', filename='5.png') }}" alt="" />
+								</a>
+
+								<a href="#">
+									<img src="{{ url_for('static', filename='enlarged-facebook-profile-picture.jpg') }}" alt="" />
+								</a>
+
+							</div>
+
+						</div>
+
+					</div>
+
+					<div class="artist__content">
+
+						<div class="tab-content">
+
+							<!-- Overview -->
+							<div role="tabpanel" class="tab-pane active" id="artist-overview">
+
+								<div class="overview">
+
+									<div class="overview__artist">
+
+										<!-- Latest Release-->
+										<div class="section-title">Latest Release</div>
+
+										<div class="latest-release">
+
+											<div class="latest-release__art">
+
+												<img src="{{ url_for('static', filename='whenDarkOut.jpg') }}" alt="When It's Dark Out" />
+
+											</div>
+
+											<div class="latest-release__song">
+
+												<div class="latest-release__song__title">Drifting (Track Commentary)</div>
+
+												<div class="latest-release__song__date">
+
+													<span class="day">4</span>
+
+													<span class="month">December</span>
+
+													<span class="year">2015</span>
+
+												</div>
+
+											</div>
+
+										</div>
+										<!-- / -->
+
+										<!-- Popular-->
+										<div class="section-title">Popular</div>
+
+										<div class="tracks">
+
+											<div class="track">
+
+												<div class="track__art">
+
+													<img src="{{ url_for('static', filename='whenDarkOut.jpg') }}" alt="When It's Dark Out" />
+
+												</div>
+
+												<div class="track__number">1</div>
+
+												<div class="track__added">
+
+													<i class="ion-checkmark-round added"></i>
+
+												</div>
+
+												<div class="track__title">Me, Myself & I</div>
+
+												<div class="track__explicit">
+
+													<span class="label">Explicit</span>
+
+												</div>
+
+												<div class="track__plays">147,544,165</div>
+
+											</div>
+
+											<div class="track">
+
+												<div class="track__art">
+
+													<img src="{{ url_for('static', filename='tth.jpg') }}" alt="These Things Happen" />
+
+												</div>
+
+												<div class="track__number">2</div>
+
+												<div class="track__added">
+
+													<i class="ion-plus not-added"></i>
+
+												</div>
+
+												<div class="track__title">I Mean It</div>
+
+												<div class="track__explicit">
+
+													<span class="label">Explicit</span>
+
+												</div>
+
+												<div class="track__plays">74,568,782</div>
+
+											</div>
+
+											<div class="track">
+
+												<div class="track__art">
+
+													<img src="{{ url_for('static', filename='whenDarkOut.jpg') }}" alt="When It's Dark Out" />
+
+												</div>
+
+												<div class="track__number">3</div>
+
+												<div class="track__added">
+
+													<i class="ion-checkmark-round added"></i>
+
+												</div>
+
+												<div class="track__title">Calm Down</div>
+
+												<div class="track__explicit">
+
+													<span class="label">Explicit</span>
+
+												</div>
+
+												<div class="track__plays">13,737,506</div>
+
+											</div>
+
+											<div class="track">
+
+												<div class="track__art">
+
+													<img src="{{ url_for('static', filename='whenDarkOut.jpg') }}" alt="When It's Dark Out" />
+
+												</div>
+
+												<div class="track__number">4</div>
+
+												<div class="track__added">
+
+													<i class="ion-plus not-added"></i>
+
+												</div>
+
+												<div class="track__title">Some Kind Of Drug</div>
+
+												<div class="track__explicit">
+
+													<span class="label">Explicit</span>
+
+												</div>
+
+												<div class="track__plays">12,234,881</div>
+
+											</div>
+
+											<div class="track">
+
+												<div class="track__art">
+
+													<img src="{{ url_for('static', filename='tth.jpg') }}" alt="These Things Happen" />
+
+												</div>
+
+												<div class="track__number">5</div>
+
+												<div class="track__added">
+
+													<i class="ion-checkmark-round added"></i>
+
+												</div>
+
+												<div class="track__title">Let's Get Lost</div>
+
+												<div class="track__explicit">
+
+													<span class="label">Explicit</span>
+
+												</div>
+
+												<div class="track__plays">40,882,954</div>
+
+											</div>
+
+										</div>
+
+										<button class="show-more button-light">Show 5 More</button>
+										<!-- / -->
+
+									</div>
+
+									<div class="overview__related">
+
+										<div class="section-title">Related Artists</div>
+
+										<div class="related-artists">
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='hoodie.jpg') }}" alt="Hoodie Allen" />
+
+												</span>
+
+												<span class="related-artist__name">Hoodie Allen</span>
+
+											</a>
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='mikestud.jpg') }}" alt="Mike Stud" />
+
+												</span>
+
+												<span class="related-artist__name">Mike Stud</span>
+
+											</a>
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='drake.jpeg') }}" alt="Drake" />
+
+												</span>
+
+												<span class="related-artist__name">Drake</span>
+
+											</a>
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='jcole.jpg') }}" alt="J. Cole" />
+
+												</span>
+
+												<span class="related-artist__name">J. Cole</span>
+
+											</a>
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='bigsean.jpg') }}" alt="Big Sean" />
+
+												</span>
+
+												<span class="related-artist__name">Big Sean</span>
+
+											</a>
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='wiz.jpeg') }}" alt="Wiz Khalifa" />
+
+												</span>
+
+												<span class="related-artist__name">Wiz Khalifa</span>
+
+											</a>
+
+											<a href="#" class="related-artist">
+
+												<span class="related-artist__img">
+
+													<img src="{{ url_for('static', filename='yonas.jpg') }}" alt="Yonas" />
+
+												</span>
+
+												<span class="related-artist__name">Yonas</span>
+
+											</a>
+
+										</div>
+
+									</div>
+
+									<div class="overview__albums">
+
+										<div class="overview__albums__head">
+
+											<span class="section-title">Albums</span>
+
+											<span class="view-type">
+
+												<i class="fa fa-list list active"></i>
+
+												<i class="fa fa-th-large card"></i>
+
+											</span>
+
+										</div>
+
+										<div class="album">
+
+											<div class="album__info">
+
+												<div class="album__info__art">
+
+													<img src="{{ url_for('static', filename='whenDarkOut.jpg') }}" alt="When It's Dark Out" />
+
+												</div>
+
+												<div class="album__info__meta">
+
+													<div class="album__year">2015</div>
+
+													<div class="album__name">When It's Dark Out</div>
+
+													<div class="album__actions">
+
+														<button class="button-light save">Save</button>
+
+														<button class="button-light more">
+															<i class="ion-ios-more"></i>
+														</button>
+
+													</div>
+
+												</div>
+
+											</div>
+
+											<div class="album__tracks">
+
+												<div class="tracks">
+
+													<div class="tracks__heading">
+
+														<div class="tracks__heading__number">#</div>
+
+														<div class="tracks__heading__title">Song</div>
+
+														<div class="tracks__heading__length">
+
+															<i class="ion-ios-stopwatch-outline"></i>
+
+														</div>
+
+														<div class="tracks__heading__popularity">
+
+															<i class="ion-thumbsup"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">1</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title">Intro</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">1:11</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">2</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title">Random</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:00</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">3</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Me, Myself & I</span>
+															<span class="feature">Bebe Rexha</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">4:11</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">4</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">One Of Them</span>
+															<span class="feature">Big Sean</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:20</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-down-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">5</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Drifting</span>
+															<span class="feature">Chris Brown</span>
+															<span class="feature">Tory Lanez</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">4:33</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">6</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Of All Things</span>
+															<span class="feature">Too $hort</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:34</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">7</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Order More</span>
+															<span class="feature">Starrah</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:29</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">8</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title">
+
+															<span>Calm Down</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">2:07</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">9</div>
+
+														<div class="track__added">
+
+															<i class="ion-plus not-added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Don't Let Me Go</span>
+															<span class="feature">Grace</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:11</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-down-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">10</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title">
+
+															<span>You Got Me</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:28</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">11</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">What If</span>
+															<span class="feature">Gizzle</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">4:13</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">12</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title">
+
+															<span>Sad Boy</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:23</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">13</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Some Kind Of Drug</span>
+															<span class="feature">Marc E. Bassy</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">3:42</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">14</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Think About You</span>
+															<span class="feature">Quin</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">2:59</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">15</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Everything Will Be OK</span>
+															<span class="feature">Kehlani</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">5:11</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">16</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">For This</span>
+															<span class="feature">Iamnobodi</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">4:11</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+													<div class="track">
+
+														<div class="track__number">17</div>
+
+														<div class="track__added">
+
+															<i class="ion-checkmark-round added"></i>
+
+														</div>
+
+														<div class="track__title featured">
+
+															<span class="title">Nothing to Me</span>
+															<span class="feature">Keyshia Cole</span>
+															<span class="feature">E-40</span>
+
+														</div>
+
+														<div class="track__explicit">
+
+															<span class="label">Explicit</span>
+
+														</div>
+
+														<div class="track__length">5:30</div>
+
+														<div class="track__popularity">
+
+															<i class="ion-arrow-graph-up-right"></i>
+
+														</div>
+
+													</div>
+
+												</div>
+
+											</div>
+
+										</div>
+
+									</div>
+
+								</div>
+
+							</div>
+							<!-- / -->
+
+							<!-- Related Artists -->
+							<div role="tabpanel" class="tab-pane" id="related-artists">
+
+								<div class="media-cards">
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='hoodie.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Hoodie Allen</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='mikestud_large.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Mike Stud</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='drake_large.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Drake</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='jcole_large.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">J. Cole</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='bigSean_large.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Big Sean</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='wiz.jpeg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Wiz Khalifa</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='yonas.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Yonas</a>
+
+									</div>
+
+									<div class="media-card">
+
+										<div class="media-card__image" style="background-image: url({{ url_for('static', filename='childish.jpg') }});">
+
+											<i class="ion-ios-play"></i>
+
+										</div>
+
+										<a class="media-card__footer">Childish Gambino</a>
+
+									</div>
+
+								</div>
+
+							</div>
+							<!-- / -->
+
+							<!-- About // Coming Soon-->
+							<!--<div role="tabpanel" class="tab-pane" id="artist-about">About</div>-->
+							<!-- / -->
+
+						</div>
+
+					</div>
+
+				</div>
+
+			</div>
+
+			<div class="content__right">
+
+				<div class="social">
+
+					<div class="friends">
+
+						<a href="#" class="friend">
+
+							<i class="ion-android-person"></i>
+
+							Sam Smith
+
+						</a>
+
+						<a href="#" class="friend">
+
+							<i class="ion-android-person"></i>
+
+							Tarah Forsyth
+
+						</a>
+
+						<a href="#" class="friend">
+
+							<i class="ion-android-person"></i>
+
+							Ricahrd Tomkins
+
+						</a>
+
+						<a href="#" class="friend">
+
+							<i class="ion-android-person"></i>
+
+							Tony Russo
+
+						</a>
+
+						<a href="#" class="friend">
+
+							<i class="ion-android-person"></i>
+
+							Alyssa Marist
+
+						</a>
+
+						<a href="#" class="friend">
+
+							<i class="ion-android-person"></i>
+
+							Ron Samson
+
+						</a>
+
+					</div>
+
+					<button class="button-light">Find Friends</button>
+
+				</div>
+
+			</div>
+
+		</section>
+
+		<section class="current-track">
+
+			<div class="current-track__actions">
+
+				<a class="ion-ios-skipbackward"></a>
+
+				<a class="ion-ios-play play"></a>
+
+				<a class="ion-ios-skipforward"></a>
+
+			</div>
+
+			<div class="current-track__progress">
+
+				<div class="current-track__progress__start">0:01</div>
+
+				<div class="current-track__progress__bar">
+
+					<div id="song-progress"></div>
+
+				</div>
+
+				<div class="current-track__progress__finish">3:07</div>
+
+			</div>
+
+			<div class="current-track__options">
+
+				<a href="#" class="lyrics">Lyrics</a>
+
+				<span class="controls">
+
+					<a href="#" class="control">
+						<i class="ion-navicon"></i>
+					</a>
+
+					<a href="#" class="control">
+						<i class="ion-shuffle"></i>
+					</a>
+
+					<a href="#" class="control">
+						<i class="fa fa-refresh"></i>
+					</a>
+
+					<a href="#" class="control devices">
+						<i class="ion-iphone"></i>
+						<span>Devices Available</span>
+					</a>
+
+					<a href="#" class="control volume">
+
+						<i class="ion-volume-high"></i>
+
+						<div id="song-volume"></div>
+
+					</a>
+
+				</span>
+
+			</div>
+
+		</section>
+		<!-- partial -->
+		<script src="{{ url_for('static', filename='jquery.js') }}"></script>
+		<script src="{{ url_for('static', filename='bootstrap.js') }}"></script>
+		<script src="{{ url_for('static', filename='nouislider.js') }}"></script>
+		<script src="{{ url_for('static', filename='script.js') }}"></script>
+
+	</body>
 </html>
