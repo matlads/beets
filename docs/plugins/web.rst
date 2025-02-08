@@ -81,10 +81,14 @@ for unsupported formats/browsers. There are a number of options for this:
 * `audio.js`_
 * `html5media`_
 * `MediaElement.js`_
+* `Howler.js`_
+* `AmplitudeJS`_
 
 .. _audio.js: https://kolber.github.io/audiojs/
-.. _html5media: https://html5media.info/
+.. _html5media: https://github.com/etianen/html5media/
 .. _MediaElement.js: https://www.mediaelementjs.com/
+.. _Howler.js: https://howlerjs.com/
+.. _AmplitudeJS: https://521dimensions.com/open-source/amplitudejs/
 
 .. _web-cors:
 
