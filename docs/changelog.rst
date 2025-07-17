@@ -33,6 +33,8 @@ New features:
 * :doc:`plugins/mpdstats`: Add new configuration option,
   ``played_ratio_threshold``, to allow configuring the percentage the song must
   be played for it to be counted as played instead of skipped.
+* :doc:`plugins/web`: Upgrade web assets backbone 1.6.0, jquery 3.7.1, and 
+  underscore 1.13.7
 
 Bug fixes:
 
