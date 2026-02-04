@@ -245,6 +245,9 @@ var AppView = Backbone.View.extend({
 	    navigator.mediaSession.setActionHandler("nexttrack", () => {
 	        this.playNext();
 	    });
+        navigator.mediaSession.setActionHandler("previoustrack", () => {
+            this.playPrevious();
+        })
 	}
     },
     showItems: function(items) {
@@ -326,7 +329,21 @@ var AppView = Backbone.View.extend({
             return;
         }
         this.playItem(this.shownItems.at(nextIdx));
-    }
+    },
+    playPrevious: function() {
+        // Try to play the previous track.
+        var idx = this.shownItems.indexOf(this.playItem);
+        if (idx == -1) {
+            // Not in current list.
+            return;
+        }
+        var previousIdx = idx - 1;
+        if (previousIdx < 0) {
+            // End of list.
+            return;
+        }
+        this.playItem(this.shownItems.at(previousIdx));
+    },
 });
 var app = new AppView();
 
