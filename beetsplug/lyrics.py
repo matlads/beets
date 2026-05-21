@@ -24,19 +24,22 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from functools import cached_property, partial, total_ordering
 from html import unescape
-from itertools import groupby
+from itertools import filterfalse, groupby
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, NamedTuple
 from urllib.parse import quote, quote_plus, urlencode, urlparse
 
-import langdetect
 import requests
 from bs4 import BeautifulSoup
 from unidecode import unidecode
 
 from beets import plugins, ui
 from beets.autotag.distance import string_dist
+from beets.dbcore import types
+from beets.dbcore.query import FalseQuery
+from beets.library import Item, parse_query_string
 from beets.util.config import sanitize_choices
+from beets.util.lyrics import INSTRUMENTAL_LYRICS, Lyrics
 
 from ._utils.requests import HTTPNotFoundError, RequestHandler
 
@@ -46,7 +49,7 @@ if TYPE_CHECKING:
     import confuse
 
     from beets.importer import ImportTask
-    from beets.library import Item, Library
+    from beets.library import Library
     from beets.logging import BeetsLogger as Logger
 
     from ._typing import (
@@ -57,12 +60,14 @@ if TYPE_CHECKING:
         TranslatorAPI,
     )
 
-INSTRUMENTAL_LYRICS = "[Instrumental]"
-
 
 class CaptchaError(requests.exceptions.HTTPError):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__("Captcha is required", *args, **kwargs)
+
+
+class GeniusHTTPError(requests.exceptions.HTTPError):
+    pass
 
 
 # Utilities.
@@ -241,13 +246,16 @@ class Backend(LyricsRequestHandler, metaclass=BackendClass):
 
     def fetch(
         self, artist: str, title: str, album: str, length: int
-    ) -> tuple[str, str] | None:
+    ) -> Lyrics | None:
+        """Return lyrics for a song, or ``None`` when no match is found."""
         raise NotImplementedError
 
 
 @dataclass
 @total_ordering
 class LRCLyrics:
+    """Hold LRCLib candidate data and ranking helpers for matching."""
+
     #: Percentage tolerance for max duration difference between lyrics and item.
     DURATION_DIFF_TOLERANCE = 0.05
 
@@ -263,16 +271,36 @@ class LRCLyrics:
         return self.dist < other.dist
 
     @classmethod
+    def verify_synced_lyrics(
+        cls, duration: float, lyrics: str | None
+    ) -> str | None:
+        """Accept synced lyrics only when the final timestamp fits duration."""
+        if lyrics and (
+            m := Lyrics.LINE_PARTS_PAT.match(lyrics.splitlines()[-1])
+        ):
+            ts, _ = m.groups()
+            if ts:
+                mm, ss = map(float, ts.strip("[]").split(":"))
+                if 60 * mm + ss <= duration:
+                    return lyrics
+
+        return None
+
+    @classmethod
     def make(
         cls, candidate: LRCLibAPI.Item, target_duration: float
     ) -> LRCLyrics:
+        """Build a scored candidate from LRCLib payload data."""
+        duration = candidate["duration"] or 0.0
         return cls(
             target_duration,
             candidate["id"],
-            candidate["duration"] or 0.0,
+            duration,
             candidate["instrumental"],
             candidate["plainLyrics"],
-            candidate["syncedLyrics"],
+            cls.verify_synced_lyrics(
+                target_duration, candidate["syncedLyrics"]
+            ),
         )
 
     @cached_property
@@ -305,6 +333,7 @@ class LRCLyrics:
         return not self.synced, self.duration_dist
 
     def get_text(self, want_synced: bool) -> str:
+        """Return the preferred text form for this candidate."""
         if self.instrumental:
             return INSTRUMENTAL_LYRICS
 
@@ -351,15 +380,17 @@ class LRCLib(Backend):
 
     def fetch(
         self, artist: str, title: str, album: str, length: int
-    ) -> tuple[str, str] | None:
+    ) -> Lyrics | None:
         """Fetch lyrics text for the given song data."""
         evaluate_item = partial(LRCLyrics.make, target_duration=length)
 
         for group in self.fetch_candidates(artist, title, album, length):
             candidates = [evaluate_item(item) for item in group]
             if item := self.pick_best_match(candidates):
-                lyrics = item.get_text(self.config["synced"])
-                return lyrics, f"{self.GET_URL}/{item.id}"
+                lyrics = item.get_text(self.config["synced"].get(bool))
+                return Lyrics(
+                    lyrics, self.__class__.name, f"{self.GET_URL}/{item.id}"
+                )
 
         return None
 
@@ -368,6 +399,7 @@ class MusiXmatch(Backend):
     URL_TEMPLATE = "https://www.musixmatch.com/lyrics/{}/{}"
 
     REPLACEMENTS: ClassVar[dict[str, str]] = {
+        "['\u2018\u2019]": "-",
         r"\s+": "-",
         "<": "Less_Than",
         ">": "Greater_Than",
@@ -387,7 +419,7 @@ class MusiXmatch(Backend):
     def build_url(cls, *args: str) -> str:
         return cls.URL_TEMPLATE.format(*map(cls.encode, args))
 
-    def fetch(self, artist: str, title: str, *_) -> tuple[str, str] | None:
+    def fetch(self, artist: str, title: str, *_) -> Lyrics | None:
         url = self.build_url(artist, title)
 
         html = self.get_text(url)
@@ -409,7 +441,7 @@ class MusiXmatch(Backend):
         # sometimes there are non-existent lyrics with some content
         if "Lyrics | Musixmatch" in lyrics:
             return None
-        return lyrics, url
+        return Lyrics(lyrics, self.__class__.name, url)
 
 
 class Html:
@@ -428,8 +460,7 @@ class Html:
     remove_aside = partial(re.compile("<aside .+?</aside>").sub, "")
     #: remove adslot-Content_1 div from the lyrics text (paroles.net)
     remove_adslot = partial(
-        re.compile(r"\n</div>[^\n]+-- Content_\d+ --.*?\n<div>", re.S).sub,
-        "\n",
+        re.compile(r"\n</div>[^\n]+-- Content_\d+ --.*?\n<div>", re.S).sub, "\n"
     )
     #: remove text formatting (azlyrics.com, lacocinelle.net)
     remove_formatting = partial(
@@ -512,13 +543,13 @@ class SearchBackend(SoupMixin, Backend):
             if check_match(candidate):
                 yield candidate
 
-    def fetch(self, artist: str, title: str, *_) -> tuple[str, str] | None:
+    def fetch(self, artist: str, title: str, *_) -> Lyrics | None:
         """Fetch lyrics for the given artist and title."""
         for result in self.get_results(artist, title):
             if (html := self.get_text(result.url)) and (
                 lyrics := self.scrape(html)
             ):
-                return lyrics, result.url
+                return Lyrics(lyrics, self.__class__.name, result.url)
 
         return None
 
@@ -544,8 +575,16 @@ class Genius(SearchBackend):
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.config['genius_api_key']}"}
 
+    def get_json(self, *args, **kwargs) -> GeniusAPI.Search:
+        response: GeniusAPI.Response = super().get_json(*args, **kwargs)
+        if "response" in response:
+            return response  # type: ignore[return-value]
+
+        meta = response["meta"]
+        raise GeniusHTTPError(f"{meta['message']} Status: {meta['status']}")
+
     def search(self, artist: str, title: str) -> Iterable[SearchResult]:
-        search_data: GeniusAPI.Search = self.get_json(
+        search_data = self.get_json(
             self.SEARCH_URL,
             params={"q": f"{artist} {title}"},
             headers=self.headers,
@@ -730,12 +769,10 @@ class Google(SearchBackend):
 
 @dataclass
 class Translator(LyricsRequestHandler):
+    """Translate lyrics text while preserving existing structured metadata."""
+
     TRANSLATE_URL = "https://api.cognitive.microsofttranslator.com/translate"
-    LINE_PARTS_RE = re.compile(r"^(\[\d\d:\d\d.\d\d\]|) *(.*)$")
     SEPARATOR = " | "
-    remove_translations = staticmethod(
-        partial(re.compile(r" / [^\n]+").sub, "")
-    )
 
     _log: Logger
     api_key: str
@@ -750,6 +787,7 @@ class Translator(LyricsRequestHandler):
         to_language: str,
         from_languages: list[str] | None = None,
     ) -> Translator:
+        """Construct a translator with normalized language configuration."""
         return cls(
             log,
             api_key,
@@ -757,7 +795,7 @@ class Translator(LyricsRequestHandler):
             [x.upper() for x in from_languages or []],
         )
 
-    def get_translations(self, texts: Iterable[str]) -> list[tuple[str, str]]:
+    def get_translations(self, texts: Iterable[str]) -> list[str]:
         """Return translations for the given texts.
 
         To reduce the translation 'cost', we translate unique texts, and then
@@ -775,37 +813,9 @@ class Translator(LyricsRequestHandler):
         translated_text = data[0]["translations"][0]["text"]
         translations = translated_text.split(self.SEPARATOR)
         trans_by_text = dict(zip(unique_texts, translations))
-        return list(zip(texts, (trans_by_text.get(t, "") for t in texts)))
+        return [trans_by_text.get(t, "") for t in texts]
 
-    @classmethod
-    def split_line(cls, line: str) -> tuple[str, str]:
-        """Split line to (timestamp, text)."""
-        if m := cls.LINE_PARTS_RE.match(line):
-            return m[1], m[2]
-
-        return "", ""
-
-    def append_translations(self, lines: Iterable[str]) -> list[str]:
-        """Append translations to the given lyrics texts.
-
-        Lines may contain timestamps from LRCLib which need to be temporarily
-        removed for the translation. They can take any of these forms:
-                        - empty
-        Text            - text only
-        [00:00:00]      - timestamp only
-        [00:00:00] Text - timestamp with text
-        """
-        # split into [(timestamp, text), ...]]
-        ts_and_text = list(map(self.split_line, lines))
-        timestamps = [ts for ts, _ in ts_and_text]
-        text_pairs = self.get_translations([ln for _, ln in ts_and_text])
-
-        # only add the separator for non-empty translations
-        texts = [" / ".join(filter(None, p)) for p in text_pairs]
-        # only add the space between non-empty timestamps and texts
-        return [" ".join(filter(None, p)) for p in zip(timestamps, texts)]
-
-    def translate(self, new_lyrics: str, old_lyrics: str) -> str:
+    def translate(self, lyrics: Lyrics, old_lyrics: Lyrics) -> Lyrics:
         """Translate the given lyrics to the target language.
 
         Check old lyrics for existing translations and return them if their
@@ -814,38 +824,33 @@ class Translator(LyricsRequestHandler):
 
         If the lyrics are already in the target language or not in any of
         of the source languages (if configured), they are returned as is.
-
-        The footer with the source URL is preserved, if present.
         """
         if (
-            " / " in old_lyrics
-            and self.remove_translations(old_lyrics) == new_lyrics
-        ):
+            lyrics.original_text
+        ) == old_lyrics.original_text and old_lyrics.translated:
             self.info("🔵 Translations already exist")
             return old_lyrics
 
-        lyrics_language = langdetect.detect(new_lyrics).upper()
-        if lyrics_language == self.to_language:
+        if (lyrics_language := lyrics.language) == self.to_language:
             self.info(
                 "🔵 Lyrics are already in the target language {.to_language}",
                 self,
             )
-            return new_lyrics
-
-        if self.from_languages and lyrics_language not in self.from_languages:
+        elif (
+            from_lang_config := self.from_languages
+        ) and lyrics_language not in from_lang_config:
             self.info(
-                "🔵 Configuration {.from_languages} does not permit translating"
-                " from {}",
-                self,
+                "🔵 Configuration {} does not permit translating from {}",
+                from_lang_config,
                 lyrics_language,
             )
-            return new_lyrics
+        else:
+            with self.handle_request():
+                lyrics.translations = self.get_translations(lyrics.text_lines)
+                lyrics.translation_language = self.to_language
+                self.info("🟢 Translated lyrics to {.to_language}", self)
 
-        lyrics, *url = new_lyrics.split("\n\nSource: ")
-        with self.handle_request():
-            translated_lines = self.append_translations(lyrics.splitlines())
-            self.info("🟢 Translated lyrics to {.to_language}", self)
-            return "\n\nSource: ".join(["\n".join(translated_lines), *url])
+        return lyrics
 
 
 @dataclass
@@ -903,10 +908,7 @@ class RestFiles:
             conf_file.write_text(self.REST_CONF_TEMPLATE)
 
     def write_artist(self, artist: str, items: Iterable[Item]) -> None:
-        parts = [
-            f"{artist}\n{'=' * len(artist)}",
-            ".. contents::\n   :local:",
-        ]
+        parts = [f"{artist}\n{'=' * len(artist)}", ".. contents::\n   :local:"]
         for album, items in groupby(items, key=lambda i: i.album):
             parts.append(f"{album}\n{'-' * len(album)}")
             parts.extend(
@@ -939,21 +941,29 @@ class RestFiles:
         ui.print_(textwrap.dedent(text))
 
 
+BACKEND_BY_NAME = {
+    b.name: b for b in [LRCLib, Google, Genius, Tekstowo, MusiXmatch]
+}
+
+
 class LyricsPlugin(LyricsRequestHandler, plugins.BeetsPlugin):
-    BACKEND_BY_NAME: ClassVar[dict[str, type[Backend]]] = {
-        b.name: b for b in [LRCLib, Google, Genius, Tekstowo, MusiXmatch]
+    item_types: ClassVar[dict[str, types.Type]] = {
+        "lyrics_url": types.STRING,
+        "lyrics_backend": types.STRING,
+        "lyrics_language": types.STRING,
+        "lyrics_translation_language": types.STRING,
     }
 
     @cached_property
     def backends(self) -> list[Backend]:
         user_sources = self.config["sources"].as_str_seq()
 
-        chosen = sanitize_choices(user_sources, self.BACKEND_BY_NAME)
+        chosen = sanitize_choices(user_sources, BACKEND_BY_NAME)
         if "google" in chosen and not self.config["google_API_key"].get():
             self.warn("Disabling Google source: no API key configured.")
             chosen.remove("google")
 
-        return [self.BACKEND_BY_NAME[c](self.config, self._log) for c in chosen]
+        return [BACKEND_BY_NAME[c](self.config, self._log) for c in chosen]
 
     @cached_property
     def translator(self) -> Translator | None:
@@ -967,6 +977,7 @@ class LyricsPlugin(LyricsRequestHandler, plugins.BeetsPlugin):
         self.config.add(
             {
                 "auto": True,
+                "auto_ignore": None,
                 "translate": {
                     "api_key": None,
                     "from_languages": [],
@@ -981,13 +992,16 @@ class LyricsPlugin(LyricsRequestHandler, plugins.BeetsPlugin):
                 ),
                 "fallback": None,
                 "force": False,
+                "keep_synced": False,
                 "local": False,
                 "print": False,
                 "synced": False,
-                # Musixmatch is disabled by default as they are currently blocking
-                # requests with the beets user agent.
+                # Musixmatch and Tekstowo are disabled by default as they
+                # currently block requests with the beets user agent.
                 "sources": [
-                    n for n in self.BACKEND_BY_NAME if n != "musixmatch"
+                    n
+                    for n in BACKEND_BY_NAME
+                    if n not in {"musixmatch", "tekstowo"}
                 ],
             }
         )
@@ -1025,6 +1039,12 @@ class LyricsPlugin(LyricsRequestHandler, plugins.BeetsPlugin):
             help="always re-download lyrics",
         )
         cmd.parser.add_option(
+            "--keep-synced",
+            action="store_true",
+            default=self.config["keep_synced"].get(),
+            help="re-download only unsynced lyrics",
+        )
+        cmd.parser.add_option(
             "-l",
             "--local",
             action="store_true",
@@ -1052,21 +1072,25 @@ class LyricsPlugin(LyricsRequestHandler, plugins.BeetsPlugin):
 
     def imported(self, _, task: ImportTask) -> None:
         """Import hook for fetching lyrics automatically."""
-        for item in task.imported_items():
+        if query_str := self.config["auto_ignore"].get():
+            query, _ = parse_query_string(query_str, Item)
+        else:
+            # matches nothing, so all items proceed normally
+            query = FalseQuery()
+
+        for item in filterfalse(query.match, task.imported_items()):
             self.add_item_lyrics(item, False)
 
-    def find_lyrics(self, item: Item) -> str:
+    def find_lyrics(self, item: Item) -> Lyrics | None:
+        """Return the first lyrics match from the configured source search."""
         album, length = item.album, round(item.length)
         matches = (
-            [
-                lyrics
-                for t in titles
-                if (lyrics := self.get_lyrics(a, t, album, length))
-            ]
+            self.get_lyrics(a, t, album, length)
             for a, titles in search_pairs(item)
+            for t in titles
         )
 
-        return "\n\n---\n\n".join(next(filter(None, matches), []))
+        return next(filter(None, matches), None)
 
     def add_item_lyrics(self, item: Item, write: bool) -> None:
         """Fetch and store lyrics for a single item. If ``write``, then the
@@ -1079,29 +1103,48 @@ class LyricsPlugin(LyricsRequestHandler, plugins.BeetsPlugin):
             self.info("🔵 Lyrics already present: {}", item)
             return
 
-        if lyrics := self.find_lyrics(item):
+        existing_lyrics = Lyrics.from_item(item)
+        if self.config["keep_synced"] and existing_lyrics.synced:
+            self.info("🔵 Keeping synced lyrics: {}", item)
+            return
+
+        if new_lyrics := self.find_lyrics(item):
             self.info("🟢 Found lyrics: {}", item)
             if translator := self.translator:
-                lyrics = translator.translate(lyrics, item.lyrics)
+                new_lyrics = translator.translate(new_lyrics, existing_lyrics)
+
+            synced_mode = self.config["synced"].get(bool)
+            if synced_mode and existing_lyrics.synced and not new_lyrics.synced:
+                self.info(
+                    "🔴 Not updating synced lyrics with non-synced ones: {}",
+                    item,
+                )
+                return
+
+            for key in ("backend", "url", "language", "translation_language"):
+                item_key = f"lyrics_{key}"
+                if value := getattr(new_lyrics, key):
+                    item[item_key] = value
+                elif item_key in item:
+                    del item[item_key]
+
+            lyrics_text = new_lyrics.full_text
         else:
             self.info("🔴 Lyrics not found: {}", item)
-            lyrics = self.config["fallback"].get()
+            lyrics_text = self.config["fallback"].get()
 
-        if lyrics not in {None, item.lyrics}:
-            item.lyrics = lyrics
+        if lyrics_text not in {None, item.lyrics}:
+            item.lyrics = lyrics_text
+            item.store()
             if write:
                 item.try_write()
-            item.store()
 
-    def get_lyrics(self, artist: str, title: str, *args) -> str | None:
-        """Fetch lyrics, trying each source in turn. Return a string or
-        None if no lyrics were found.
-        """
+    def get_lyrics(self, artist: str, title: str, *args) -> Lyrics | None:
+        """Get first found lyrics, trying each source in turn."""
         self.info("Fetching lyrics for {} - {}", artist, title)
         for backend in self.backends:
             with backend.handle_request():
                 if lyrics_info := backend.fetch(artist, title, *args):
-                    lyrics, url = lyrics_info
-                    return f"{lyrics}\n\nSource: {url}"
+                    return lyrics_info
 
         return None

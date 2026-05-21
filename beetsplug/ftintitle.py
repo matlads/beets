@@ -52,9 +52,7 @@ DEFAULT_BRACKET_KEYWORDS: tuple[str, ...] = (
 
 
 def split_on_feat(
-    artist: str,
-    for_artist: bool = True,
-    custom_words: list[str] | None = None,
+    artist: str, for_artist: bool = True, custom_words: list[str] | None = None
 ) -> tuple[str, str | None]:
     """Given an artist string, split the "main" artist from any artist
     on the right-hand side of a string like "feat". Return the main
@@ -70,6 +68,12 @@ def split_on_feat(
     parts = tuple(s.strip() for s in regex_explicit.split(artist, 1))
     if len(parts) == 2:
         return parts
+
+    # Try comma as separator
+    # (e.g. "Alice, Bob & Charlie" where Bob and Charlie are featuring)
+    if for_artist and "," in artist:
+        comma_parts = artist.split(",", 1)
+        return comma_parts[0].strip(), comma_parts[1].strip()
 
     # Fall back to all tokens including generic separators if no explicit match
     if for_artist:
@@ -97,9 +101,7 @@ def contains_feat(title: str, custom_words: list[str] | None = None) -> bool:
 
 
 def find_feat_part(
-    artist: str,
-    albumartist: str | None,
-    custom_words: list[str] | None = None,
+    artist: str, albumartist: str | None, custom_words: list[str] | None = None
 ) -> str | None:
     """Attempt to find featured artists in the item's artist fields and
     return the results. Returns None if no featured artist found.
@@ -336,17 +338,6 @@ class FtInTitlePlugin(plugins.BeetsPlugin):
             item, feat_part, drop_feat, keep_in_artist_field, custom_words
         )
         return True
-
-    @staticmethod
-    def find_bracket_position(
-        title: str, keywords: list[str] | None = None
-    ) -> int | None:
-        normalized = (
-            DEFAULT_BRACKET_KEYWORDS if keywords is None else tuple(keywords)
-        )
-        pattern = FtInTitlePlugin._bracket_position_pattern(normalized)
-        m: re.Match[str] | None = pattern.search(title)
-        return m.start() if m else None
 
     @classmethod
     def insert_ft_into_title(

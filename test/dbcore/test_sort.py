@@ -14,14 +14,21 @@
 
 """Various tests for querying the library database."""
 
+import os
 from unittest.mock import patch
 
 import beets.library
-from beets import config, dbcore
+from beets import config, util
 from beets.dbcore import types
+from beets.dbcore.query import TrueQuery
+from beets.dbcore.sort import FixedFieldSort, MultipleSort, SlowFieldSort
 from beets.library import Album
 from beets.test import _common
 from beets.test.helper import BeetsTestCase
+
+
+def abs_test_path(path: str) -> str:
+    return os.fsdecode(util.normpath(path))
 
 
 # A test case class providing a library with some dummy data and some
@@ -33,7 +40,7 @@ class DummyDataTestCase(BeetsTestCase):
         albums = [
             Album(
                 album="Album A",
-                genre="Rock",
+                genres=["Rock"],
                 year=2001,
                 flex1="Flex1-1",
                 flex2="Flex2-A",
@@ -41,7 +48,7 @@ class DummyDataTestCase(BeetsTestCase):
             ),
             Album(
                 album="Album B",
-                genre="Rock",
+                genres=["Rock"],
                 year=2001,
                 flex1="Flex1-2",
                 flex2="Flex2-A",
@@ -49,7 +56,7 @@ class DummyDataTestCase(BeetsTestCase):
             ),
             Album(
                 album="Album C",
-                genre="Jazz",
+                genres=["Jazz"],
                 year=2005,
                 flex1="Flex1-1",
                 flex2="Flex2-B",
@@ -69,7 +76,7 @@ class DummyDataTestCase(BeetsTestCase):
         items[0].flex2 = "Flex2-A"
         items[0].album_id = albums[0].id
         items[0].artist_sort = None
-        items[0].path = "/path0.mp3"
+        items[0].path = abs_test_path("/path0.mp3")
         items[0].track = 1
         items[1].title = "Baz qux"
         items[1].artist = "Two"
@@ -80,7 +87,7 @@ class DummyDataTestCase(BeetsTestCase):
         items[1].flex2 = "Flex2-A"
         items[1].album_id = albums[0].id
         items[1].artist_sort = None
-        items[1].path = "/patH1.mp3"
+        items[1].path = abs_test_path("/patH1.mp3")
         items[1].track = 2
         items[2].title = "Beets 4 eva"
         items[2].artist = "Three"
@@ -91,7 +98,7 @@ class DummyDataTestCase(BeetsTestCase):
         items[2].flex2 = "Flex1-B"
         items[2].album_id = albums[1].id
         items[2].artist_sort = None
-        items[2].path = "/paTH2.mp3"
+        items[2].path = abs_test_path("/paTH2.mp3")
         items[2].track = 3
         items[3].title = "Beets 4 eva"
         items[3].artist = "Three"
@@ -102,7 +109,7 @@ class DummyDataTestCase(BeetsTestCase):
         items[3].flex2 = "Flex1-C"
         items[3].album_id = albums[2].id
         items[3].artist_sort = None
-        items[3].path = "/PATH3.mp3"
+        items[3].path = abs_test_path("/PATH3.mp3")
         items[3].track = 4
         for item in items:
             self.lib.add(item)
@@ -111,7 +118,7 @@ class DummyDataTestCase(BeetsTestCase):
 class SortFixedFieldTest(DummyDataTestCase):
     def test_sort_asc(self):
         q = ""
-        sort = dbcore.query.FixedFieldSort("year", True)
+        sort = FixedFieldSort("year", True)
         results = self.lib.items(q, sort)
         assert results[0]["year"] <= results[1]["year"]
         assert results[0]["year"] == 2001
@@ -123,7 +130,7 @@ class SortFixedFieldTest(DummyDataTestCase):
 
     def test_sort_desc(self):
         q = ""
-        sort = dbcore.query.FixedFieldSort("year", False)
+        sort = FixedFieldSort("year", False)
         results = self.lib.items(q, sort)
         assert results[0]["year"] >= results[1]["year"]
         assert results[0]["year"] == 2004
@@ -135,9 +142,9 @@ class SortFixedFieldTest(DummyDataTestCase):
 
     def test_sort_two_field_asc(self):
         q = ""
-        s1 = dbcore.query.FixedFieldSort("album", True)
-        s2 = dbcore.query.FixedFieldSort("year", True)
-        sort = dbcore.query.MultipleSort()
+        s1 = FixedFieldSort("album", True)
+        s2 = FixedFieldSort("year", True)
+        sort = MultipleSort()
         sort.add_sort(s1)
         sort.add_sort(s2)
         results = self.lib.items(q, sort)
@@ -154,18 +161,18 @@ class SortFixedFieldTest(DummyDataTestCase):
 
     def test_sort_path_field(self):
         q = ""
-        sort = dbcore.query.FixedFieldSort("path", True)
+        sort = FixedFieldSort("path", True)
         results = self.lib.items(q, sort)
-        assert results[0]["path"] == b"/path0.mp3"
-        assert results[1]["path"] == b"/patH1.mp3"
-        assert results[2]["path"] == b"/paTH2.mp3"
-        assert results[3]["path"] == b"/PATH3.mp3"
+        assert results[0]["path"] == util.normpath("/path0.mp3")
+        assert results[1]["path"] == util.normpath("/patH1.mp3")
+        assert results[2]["path"] == util.normpath("/paTH2.mp3")
+        assert results[3]["path"] == util.normpath("/PATH3.mp3")
 
 
 class SortFlexFieldTest(DummyDataTestCase):
     def test_sort_asc(self):
         q = ""
-        sort = dbcore.query.SlowFieldSort("flex1", True)
+        sort = SlowFieldSort("flex1", True)
         results = self.lib.items(q, sort)
         assert results[0]["flex1"] <= results[1]["flex1"]
         assert results[0]["flex1"] == "Flex1-0"
@@ -177,7 +184,7 @@ class SortFlexFieldTest(DummyDataTestCase):
 
     def test_sort_desc(self):
         q = ""
-        sort = dbcore.query.SlowFieldSort("flex1", False)
+        sort = SlowFieldSort("flex1", False)
         results = self.lib.items(q, sort)
         assert results[0]["flex1"] >= results[1]["flex1"]
         assert results[1]["flex1"] >= results[2]["flex1"]
@@ -191,9 +198,9 @@ class SortFlexFieldTest(DummyDataTestCase):
 
     def test_sort_two_field(self):
         q = ""
-        s1 = dbcore.query.SlowFieldSort("flex2", False)
-        s2 = dbcore.query.SlowFieldSort("flex1", True)
-        sort = dbcore.query.MultipleSort()
+        s1 = SlowFieldSort("flex2", False)
+        s2 = SlowFieldSort("flex1", True)
+        sort = MultipleSort()
         sort.add_sort(s1)
         sort.add_sort(s2)
         results = self.lib.items(q, sort)
@@ -212,7 +219,7 @@ class SortFlexFieldTest(DummyDataTestCase):
 class SortAlbumFixedFieldTest(DummyDataTestCase):
     def test_sort_asc(self):
         q = ""
-        sort = dbcore.query.FixedFieldSort("year", True)
+        sort = FixedFieldSort("year", True)
         results = self.lib.albums(q, sort)
         assert results[0]["year"] <= results[1]["year"]
         assert results[0]["year"] == 2001
@@ -224,7 +231,7 @@ class SortAlbumFixedFieldTest(DummyDataTestCase):
 
     def test_sort_desc(self):
         q = ""
-        sort = dbcore.query.FixedFieldSort("year", False)
+        sort = FixedFieldSort("year", False)
         results = self.lib.albums(q, sort)
         assert results[0]["year"] >= results[1]["year"]
         assert results[0]["year"] == 2005
@@ -236,19 +243,19 @@ class SortAlbumFixedFieldTest(DummyDataTestCase):
 
     def test_sort_two_field_asc(self):
         q = ""
-        s1 = dbcore.query.FixedFieldSort("genre", True)
-        s2 = dbcore.query.FixedFieldSort("album", True)
-        sort = dbcore.query.MultipleSort()
+        s1 = FixedFieldSort("genres", True)
+        s2 = FixedFieldSort("album", True)
+        sort = MultipleSort()
         sort.add_sort(s1)
         sort.add_sort(s2)
         results = self.lib.albums(q, sort)
-        assert results[0]["genre"] <= results[1]["genre"]
-        assert results[1]["genre"] <= results[2]["genre"]
-        assert results[1]["genre"] == "Rock"
-        assert results[2]["genre"] == "Rock"
+        assert results[0]["genres"] <= results[1]["genres"]
+        assert results[1]["genres"] <= results[2]["genres"]
+        assert results[1]["genres"] == ["Rock"]
+        assert results[2]["genres"] == ["Rock"]
         assert results[1]["album"] <= results[2]["album"]
         # same thing with query string
-        q = "genre+ album+"
+        q = "genres+ album+"
         results2 = self.lib.albums(q)
         for r1, r2 in zip(results, results2):
             assert r1.id == r2.id
@@ -257,7 +264,7 @@ class SortAlbumFixedFieldTest(DummyDataTestCase):
 class SortAlbumFlexFieldTest(DummyDataTestCase):
     def test_sort_asc(self):
         q = ""
-        sort = dbcore.query.SlowFieldSort("flex1", True)
+        sort = SlowFieldSort("flex1", True)
         results = self.lib.albums(q, sort)
         assert results[0]["flex1"] <= results[1]["flex1"]
         assert results[1]["flex1"] <= results[2]["flex1"]
@@ -269,7 +276,7 @@ class SortAlbumFlexFieldTest(DummyDataTestCase):
 
     def test_sort_desc(self):
         q = ""
-        sort = dbcore.query.SlowFieldSort("flex1", False)
+        sort = SlowFieldSort("flex1", False)
         results = self.lib.albums(q, sort)
         assert results[0]["flex1"] >= results[1]["flex1"]
         assert results[1]["flex1"] >= results[2]["flex1"]
@@ -281,9 +288,9 @@ class SortAlbumFlexFieldTest(DummyDataTestCase):
 
     def test_sort_two_field_asc(self):
         q = ""
-        s1 = dbcore.query.SlowFieldSort("flex2", True)
-        s2 = dbcore.query.SlowFieldSort("flex1", True)
-        sort = dbcore.query.MultipleSort()
+        s1 = SlowFieldSort("flex2", True)
+        s2 = SlowFieldSort("flex1", True)
+        sort = MultipleSort()
         sort.add_sort(s1)
         sort.add_sort(s2)
         results = self.lib.albums(q, sort)
@@ -302,7 +309,7 @@ class SortAlbumFlexFieldTest(DummyDataTestCase):
 class SortAlbumComputedFieldTest(DummyDataTestCase):
     def test_sort_asc(self):
         q = ""
-        sort = dbcore.query.SlowFieldSort("path", True)
+        sort = SlowFieldSort("path", True)
         results = self.lib.albums(q, sort)
         assert results[0]["path"] <= results[1]["path"]
         assert results[1]["path"] <= results[2]["path"]
@@ -314,7 +321,7 @@ class SortAlbumComputedFieldTest(DummyDataTestCase):
 
     def test_sort_desc(self):
         q = ""
-        sort = dbcore.query.SlowFieldSort("path", False)
+        sort = SlowFieldSort("path", False)
         results = self.lib.albums(q, sort)
         assert results[0]["path"] >= results[1]["path"]
         assert results[1]["path"] >= results[2]["path"]
@@ -328,9 +335,9 @@ class SortAlbumComputedFieldTest(DummyDataTestCase):
 class SortCombinedFieldTest(DummyDataTestCase):
     def test_computed_first(self):
         q = ""
-        s1 = dbcore.query.SlowFieldSort("path", True)
-        s2 = dbcore.query.FixedFieldSort("year", True)
-        sort = dbcore.query.MultipleSort()
+        s1 = SlowFieldSort("path", True)
+        s2 = FixedFieldSort("year", True)
+        sort = MultipleSort()
         sort.add_sort(s1)
         sort.add_sort(s2)
         results = self.lib.albums(q, sort)
@@ -343,9 +350,9 @@ class SortCombinedFieldTest(DummyDataTestCase):
 
     def test_computed_second(self):
         q = ""
-        s1 = dbcore.query.FixedFieldSort("year", True)
-        s2 = dbcore.query.SlowFieldSort("path", True)
-        sort = dbcore.query.MultipleSort()
+        s1 = FixedFieldSort("year", True)
+        s2 = SlowFieldSort("path", True)
+        sort = MultipleSort()
         sort.add_sort(s1)
         sort.add_sort(s2)
         results = self.lib.albums(q, sort)
@@ -388,7 +395,7 @@ class CaseSensitivityTest(DummyDataTestCase):
 
         album = Album(
             album="album",
-            genre="alternative",
+            genres=["alternative"],
             year="2001",
             flex1="flex1",
             flex2="flex2-A",
@@ -563,6 +570,6 @@ class NonExistingFieldTest(DummyDataTestCase):
             "-bar+", beets.library.Item
         )
         assert len(query.subqueries) == 1
-        assert isinstance(query.subqueries[0], dbcore.query.TrueQuery)
-        assert isinstance(sort, dbcore.query.SlowFieldSort)
+        assert isinstance(query.subqueries[0], TrueQuery)
+        assert isinstance(sort, SlowFieldSort)
         assert sort.field == "-bar"

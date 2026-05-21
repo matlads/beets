@@ -581,6 +581,9 @@ beets will copy and then delete when a simple rename is impossible.) Moving
 files can be risky—it's a good idea to keep a backup in case beets doesn't do
 what you expect with your files.
 
+In the case of a ``move`` when importing an archive, the archive will be removed
+if all contents were successfully imported.
+
 This option *overrides* ``copy``, so enabling it will always move (and not copy)
 files. The ``-c`` switch to the ``beet import`` command, however, still takes
 precedence.
@@ -738,6 +741,9 @@ MusicBrainz. You can use a space-separated list of language abbreviations, like
 ``en jp es``, to specify a preference order. Defaults to an empty list, meaning
 that no language is preferred.
 
+The alias is used for artist name, track title, release group title and album
+title.
+
 .. _ignored_alias_types:
 
 ignored_alias_types
@@ -853,11 +859,11 @@ set_fields
 A dictionary indicating fields to set to values for newly imported music. Here's
 an example:
 
-::
+.. code-block:: yaml
 
     set_fields:
-        genre: 'To Listen'
-        collection: 'Unordered'
+        genres: To Listen
+        collection: Unordered
 
 Other field/value pairs supplied via the ``--set`` option on the command-line
 override any settings here for fields with the same name.
@@ -880,6 +886,36 @@ appended to the disambiguation string of matching track candidates. For example:
 ``The Artist - The Title (Discogs, Index 3, Track B1, [The Album]``. This
 feature is currently supported by the :doc:`/plugins/discogs` and the
 :doc:`/plugins/spotify`.
+
+Default: ``yes``.
+
+.. _fix_ext_inplace:
+
+fix_ext_inplace
+~~~~~~~~~~~~~~~
+
+The extension of each file is checked at import. If a file has no extension and
+its binary matches a music format, beets will look for a file with the same name
+and matching extension in the same directory. For example, when importing an mp3
+file named ``asdf``, beets look for ``asdf.mp3``. If found, that file will be
+imported instead. Otherwise, if ``fix_ext_inplace`` is ``yes``, then the file
+will be renamed to contain the extension. If ``fix_ext_inplace`` is ``no``, then
+the original will be left untouched and a copy with extension will be created in
+the same directory. This is only done if the user has ``ffprobe`` (bundled with
+FFmpeg)
+
+Default: ``no``.
+
+.. _remux_mp3_in_wav:
+
+remux_mp3_in_wav
+~~~~~~~~~~~~~~~~
+
+Some WAV files contain MP3 audio streams (``WAVE_FORMAT_MPEGLAYER3``) rather
+than the standard PCM format. When this option is enabled, beets will
+automatically extract the MP3 stream into a proper ``.mp3`` file during import,
+removing the WAV container. The original WAV file is deleted after successful
+extraction.
 
 Default: ``yes``.
 
@@ -912,6 +948,55 @@ match is below the *medium* recommendation threshold or the distance between it
 and the next-best match is above the *gap* threshold, the importer will suggest
 that match but not automatically confirm it. Otherwise, you'll see a list of
 options to choose from.
+
+.. _distance-weights:
+
+distance_weights
+~~~~~~~~~~~~~~~~
+
+The ``distance_weights`` option allows you to customize how much each field
+contributes to the overall distance score when matching albums and tracks.
+Higher weights mean that differences in that field are penalized more heavily,
+making them more important in the matching decision.
+
+The defaults are:
+
+.. code-block:: yaml
+
+    match:
+        distance_weights:
+            data_source: 2.0
+            artist: 3.0
+            album: 3.0
+            media: 1.0
+            mediums: 1.0
+            year: 1.0
+            country: 0.5
+            label: 0.5
+            catalognum: 0.5
+            albumdisambig: 0.5
+            album_id: 5.0
+            tracks: 2.0
+            missing_tracks: 0.9
+            unmatched_tracks: 0.6
+            track_title: 3.0
+            track_artist: 2.0
+            track_index: 1.0
+            track_length: 2.0
+            track_id: 5.0
+            medium: 1.0
+
+For example, if you don't care as much about matching the exact release year,
+you can reduce its weight:
+
+.. code-block:: yaml
+
+    match:
+        distance_weights:
+            year: 0.1
+
+You only need to specify the fields you want to override; unspecified fields
+keep their default weights.
 
 .. _max_rec:
 
@@ -1102,6 +1187,9 @@ config file like this:
 will place soundtrack albums in a separate directory. The queries are tested in
 the order they appear in the configuration file, meaning that if an item matches
 multiple queries, beets will use the path format for the *first* matching query.
+Queries on multi-value fields, such as ``genres``, match each individual value,
+so an exact string query like ``genres:=Classical`` can match an item whose
+genres are ``Classical`` and ``Baroque`` without also matching ``Neoclassical``.
 
 Note that the special ``singleton`` and ``comp`` path format conditions are, in
 fact, just shorthand for the explicit queries ``singleton:true`` and
@@ -1172,9 +1260,9 @@ Here's an example file:
         color: yes
 
     paths:
-        default: $genre/$albumartist/$album/$track $title
+        default: %first{$genres}/$albumartist/$album/$track $title
         singleton: Singletons/$artist - $title
-        comp: $genre/$album/$track $title
+        comp: %first{$genres}/$album/$track $title
         albumtype:soundtrack: Soundtracks/$album/$track $title
 
 .. only:: man

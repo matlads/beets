@@ -10,11 +10,13 @@ from unidecode import unidecode
 
 from beets import config, metadata_plugins
 from beets.util import as_string, cached_classproperty, get_most_common_tags
+from beets.util.color import colorize
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from beets.library import Item
+    from beets.util.color import ColorName
 
     from .hooks import AlbumInfo, TrackInfo
 
@@ -39,9 +41,7 @@ SD_PATTERNS = [
     (r"(, )?(pt\.|part) .+", 0.2),
 ]
 # Replacements to use before testing distance.
-SD_REPLACE = [
-    (r"&", "and"),
-]
+SD_REPLACE = [(r"&", "and")]
 
 
 def _string_dist_basic(str1: str, str2: str) -> float:
@@ -139,6 +139,14 @@ class Distance:
             weights[key] = weights_view[key].as_number()
         return weights
 
+    @property
+    def generic_penalty_keys(self) -> list[str]:
+        return [
+            k.replace("album_", "").replace("track_", "").replace("_", " ")
+            for k in self._penalties
+            if self[k]
+        ]
+
     # Access the components and their aggregates.
 
     @property
@@ -166,6 +174,18 @@ class Distance:
         for key, penalty in self._penalties.items():
             dist_raw += sum(penalty) * self._weights[key]
         return dist_raw
+
+    @property
+    def color(self) -> ColorName:
+        if self.distance <= config["match"]["strong_rec_thresh"].as_number():
+            return "text_success"
+        if self.distance <= config["match"]["medium_rec_thresh"].as_number():
+            return "text_warning"
+        return "text_error"
+
+    @property
+    def string(self) -> str:
+        return colorize(self.color, f"{(1 - self.distance) * 100:.1f}%")
 
     def items(self) -> list[tuple[str, float]]:
         """Return a list of (key, dist) pairs, with `dist` being the
@@ -257,10 +277,7 @@ class Distance:
         self._penalties.setdefault(key, []).append(dist)
 
     def add_equality(
-        self,
-        key: str,
-        value: Any,
-        options: list[Any] | tuple[Any, ...] | Any,
+        self, key: str, value: Any, options: list[Any] | tuple[Any, ...] | Any
     ):
         """Adds a distance penalty of 1.0 if `value` doesn't match any
         of the values in `options`. If an option is a compiled regular
@@ -300,10 +317,7 @@ class Distance:
             self.add(key, 0.0)
 
     def add_priority(
-        self,
-        key: str,
-        value: Any,
-        options: list[Any] | tuple[Any, ...] | Any,
+        self, key: str, value: Any, options: list[Any] | tuple[Any, ...] | Any
     ):
         """Adds a distance penalty that corresponds to the position at
         which `value` appears in `options`. A distance penalty of 0.0
@@ -322,12 +336,7 @@ class Distance:
             dist = 1.0
         self.add(key, dist)
 
-    def add_ratio(
-        self,
-        key: str,
-        number1: int | float,
-        number2: int | float,
-    ):
+    def add_ratio(self, key: str, number1: int | float, number2: int | float):
         """Adds a distance penalty for `number1` as a ratio of `number2`.
         `number1` is bound at 0 and `number2`.
         """
@@ -372,9 +381,7 @@ def track_index_changed(item: Item, track_info: TrackInfo) -> bool:
 
 
 def track_distance(
-    item: Item,
-    track_info: TrackInfo,
-    incl_artist: bool = False,
+    item: Item, track_info: TrackInfo, incl_artist: bool = False
 ) -> Distance:
     """Determines the significance of a track metadata change. Returns a
     Distance object. `incl_artist` indicates that a distance component should

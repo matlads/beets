@@ -1,24 +1,27 @@
 import unittest
 
+import pytest
 from mediafile import MediaFile
 
-from beets.test.helper import BeetsTestCase, control_stdin
+from beets import logging
+from beets.test.helper import BeetsTestCase, IOMixin
 from beets.ui.commands.modify import modify_parse_args
 from beets.util import syspath
 
 
-class ModifyTest(BeetsTestCase):
+class ModifyTest(IOMixin, BeetsTestCase):
     def setUp(self):
         super().setUp()
         self.album = self.add_album_fixture()
         [self.item] = self.album.items()
 
-    def modify_inp(self, inp, *args):
-        with control_stdin(inp):
-            self.run_command("modify", *args)
+    def modify_inp(self, inp: list[str], *args):
+        for chat in inp:
+            self.io.addinput(chat)
+        self.run_command("modify", *args)
 
     def modify(self, *args):
-        self.modify_inp("y", *args)
+        self.modify_inp(["y"], *args)
 
     # Item tests
 
@@ -30,14 +33,14 @@ class ModifyTest(BeetsTestCase):
     def test_modify_item_abort(self):
         item = self.lib.items().get()
         title = item.title
-        self.modify_inp("n", "title=newTitle")
+        self.modify_inp(["n"], "title=newTitle")
         item = self.lib.items().get()
         assert item.title == title
 
     def test_modify_item_no_change(self):
         title = "Tracktitle"
         item = self.add_item_fixture(title=title)
-        self.modify_inp("y", "title", f"title={title}")
+        self.modify_inp(["y"], "title", f"title={title}")
         item = self.lib.items(title).get()
         assert item.title == title
 
@@ -96,7 +99,9 @@ class ModifyTest(BeetsTestCase):
                 title=f"{title}{i}", artist=original_artist, album=album
             )
         self.modify_inp(
-            "s\ny\ny\ny\nn\nn\ny\ny\ny\ny\nn", title, f"artist={new_artist}"
+            ["s", "y", "y", "y", "n", "n", "y", "y", "y", "y", "n"],
+            title,
+            f"artist={new_artist}",
         )
         original_items = self.lib.items(f"artist:{original_artist}")
         new_items = self.lib.items(f"artist:{new_artist}")
@@ -190,23 +195,55 @@ class ModifyTest(BeetsTestCase):
         assert mediafile.initial_key is None
 
     def test_arg_parsing_colon_query(self):
-        query, mods, _ = modify_parse_args(["title:oldTitle", "title=newTitle"])
+        query, mods, _ = modify_parse_args(
+            ["title:oldTitle", "title=newTitle"], is_album=False
+        )
         assert query == ["title:oldTitle"]
         assert mods == {"title": "newTitle"}
 
     def test_arg_parsing_delete(self):
-        query, _, dels = modify_parse_args(["title:oldTitle", "title!"])
+        query, _, dels = modify_parse_args(
+            ["title:oldTitle", "title!"], is_album=False
+        )
         assert query == ["title:oldTitle"]
         assert dels == ["title"]
 
     def test_arg_parsing_query_with_exclaimation(self):
         query, mods, _ = modify_parse_args(
-            ["title:oldTitle!", "title=newTitle!"]
+            ["title:oldTitle!", "title=newTitle!"], is_album=False
         )
         assert query == ["title:oldTitle!"]
         assert mods == {"title": "newTitle!"}
 
     def test_arg_parsing_equals_in_value(self):
-        query, mods, _ = modify_parse_args(["title:foo=bar", "title=newTitle"])
+        query, mods, _ = modify_parse_args(
+            ["title:foo=bar", "title=newTitle"], is_album=False
+        )
         assert query == ["title:foo=bar"]
         assert mods == {"title": "newTitle"}
+
+
+@pytest.mark.parametrize(
+    "is_album, legacy_field, list_field",
+    [
+        pytest.param(True, "genre", "genres", id="album-genre"),
+        pytest.param(False, "genre", "genres", id="item-genre"),
+        pytest.param(False, "composer", "composers", id="item-composer"),
+    ],
+)
+def test_arg_parsing_rewrites_legacy_list_fields(
+    is_album, legacy_field, list_field, caplog
+):
+    with caplog.at_level(logging.WARNING, logger="beets"):
+        query, mods, dels = modify_parse_args(
+            [f"{legacy_field}=value1; value2"], is_album=is_album
+        )
+
+    assert query == []
+    assert mods == {list_field: "value1; value2"}
+    assert dels == []
+    assert caplog.records, "No log records were captured"
+    assert len(caplog.records) == 1
+    message = str(caplog.records[0].msg)
+    assert f"The '{legacy_field}' field is deprecated" in message
+    assert f"Use '{list_field}' (separate values by '; ') instead." in message

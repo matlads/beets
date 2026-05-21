@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 import beets
 import beets.ui
-from beets import dbcore, logging
+from beets import dbcore
+from beets.exceptions import UserError
 from beets.library import Item
 from beets.plugins import BeetsPlugin
 from beets.util import as_string, bluelet
@@ -38,8 +39,6 @@ from beetsplug._utils import vfs
 
 if TYPE_CHECKING:
     from beets.dbcore.query import Query
-
-log = logging.getLogger(__name__)
 
 
 try:
@@ -1010,8 +1009,7 @@ class Command:
         # If the command accepts a variable number of arguments skip the check.
         if wrong_num and not argspec.varargs:
             raise TypeError(
-                f'wrong number of arguments for "{self.name}"',
-                self.name,
+                f'wrong number of arguments for "{self.name}"', self.name
             )
 
         return func
@@ -1139,7 +1137,10 @@ class Server(BaseServer):
             pass
 
         for tagtype, field in self.tagtype_map.items():
-            info_lines.append(f"{tagtype}: {getattr(item, field)}")
+            field_value = getattr(item, field)
+            if isinstance(field_value, list):
+                field_value = "; ".join(field_value)
+            info_lines.append(f"{tagtype}: {field_value}")
 
         return info_lines
 
@@ -1353,10 +1354,10 @@ class Server(BaseServer):
         "AlbumArtist": "albumartist",
         "AlbumArtistSort": "albumartist_sort",
         "Label": "label",
-        "Genre": "genre",
+        "Genre": "genres",
         "Date": "year",
         "OriginalDate": "original_year",
-        "Composer": "composer",
+        "Composer": "composers",
         "Disc": "disc",
         "Comment": "comments",
         "MUSICBRAINZ_TRACKID": "mb_trackid",
@@ -1516,11 +1517,7 @@ class Server(BaseServer):
 
     def cmd_outputs(self, conn):
         """List the available outputs."""
-        yield (
-            "outputid: 0",
-            "outputname: gstreamer",
-            "outputenabled: 1",
-        )
+        yield ("outputid: 0", "outputname: gstreamer", "outputenabled: 1")
 
     def cmd_enableoutput(self, conn, output_id):
         output_id = cast_arg(int, output_id)
@@ -1617,7 +1614,7 @@ class BPDPlugin(BeetsPlugin):
             else:
                 ctrl_port = self.config["control_port"].get(int)
             if args:
-                raise beets.ui.UserError("too many arguments")
+                raise UserError("too many arguments")
             password = self.config["password"].as_str()
             volume = self.config["volume"].get(int)
             self.start_bpd(

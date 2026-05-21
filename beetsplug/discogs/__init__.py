@@ -25,7 +25,7 @@ import re
 import socket
 import time
 import traceback
-from functools import cache
+from functools import cache, cached_property
 from string import ascii_lowercase
 from typing import TYPE_CHECKING
 
@@ -36,17 +36,19 @@ from requests.exceptions import ConnectionError
 
 import beets
 import beets.ui
-from beets import config
+from beets import config, util
 from beets.autotag.distance import string_dist
 from beets.autotag.hooks import AlbumInfo, TrackInfo
-from beets.metadata_plugins import MetadataSourcePlugin
+from beets.exceptions import UserError
+from beets.metadata_plugins import IDResponse, SearchApiMetadataSourcePlugin
 
 from .states import DISAMBIGUATION_RE, ArtistState, TracklistState
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from beets.library import Item
+    from beets.metadata_plugins import QueryType, SearchParams
 
     from .types import ReleaseFormat, Track
 
@@ -79,8 +81,17 @@ TRACK_INDEX_RE = re.compile(
     re.VERBOSE,
 )
 
+FIELDS_TO_DISCOGS_KEYS = {
+    "barcode": "barcode",
+    "catalognum": "catno",
+    "country": "country",
+    "label": "label",
+    "media": "format",
+    "year": "year",
+}
 
-class DiscogsPlugin(MetadataSourcePlugin):
+
+class DiscogsPlugin(SearchApiMetadataSourcePlugin[IDResponse]):
     def __init__(self):
         super().__init__()
         self.config.add(
@@ -94,6 +105,7 @@ class DiscogsPlugin(MetadataSourcePlugin):
                 "append_style_genre": False,
                 "strip_disambiguation": True,
                 "featured_string": "Feat.",
+                "extra_tags": [],
                 "anv": {
                     "artist_credit": True,
                     "artist": False,
@@ -105,6 +117,25 @@ class DiscogsPlugin(MetadataSourcePlugin):
         self.config["apisecret"].redact = True
         self.config["user_token"].redact = True
         self.setup()
+
+    @cached_property
+    def extra_discogs_field_by_tag(self) -> dict[str, str]:
+        """Map configured extra tags to Discogs API search parameters.
+
+        Process user configuration to determine which additional Discogs
+        fields should be included in search queries.
+        """
+        field_by_tag = {
+            tag: FIELDS_TO_DISCOGS_KEYS[tag]
+            for tag in self.config["extra_tags"].as_str_seq()
+            if tag in FIELDS_TO_DISCOGS_KEYS
+        }
+        if field_by_tag:
+            self._log.debug(
+                "Discogs additional search filters from tags: {}", field_by_tag
+            )
+
+        return field_by_tag
 
     def setup(self, session=None) -> None:
         """Create the `discogs_client` field. Authenticate if necessary."""
@@ -148,7 +179,7 @@ class DiscogsPlugin(MetadataSourcePlugin):
             _, _, url = auth_client.get_authorize_url()
         except CONNECTION_ERRORS as e:
             self._log.debug("connection error: {}", e)
-            raise beets.ui.UserError("communication with Discogs failed")
+            raise UserError("communication with Discogs failed")
 
         beets.ui.print_("To authenticate with Discogs, visit:")
         beets.ui.print_(url)
@@ -158,10 +189,10 @@ class DiscogsPlugin(MetadataSourcePlugin):
         try:
             token, secret = auth_client.get_access_token(code)
         except DiscogsAPIError:
-            raise beets.ui.UserError("Discogs authorization failed")
+            raise UserError("Discogs authorization failed")
         except CONNECTION_ERRORS as e:
             self._log.debug("connection error: {}", e)
-            raise beets.ui.UserError("Discogs token request failed")
+            raise UserError("Discogs token request failed")
 
         # Save the token for later use.
         self._log.debug("Discogs token {}, secret {}", token, secret)
@@ -169,11 +200,6 @@ class DiscogsPlugin(MetadataSourcePlugin):
             json.dump({"token": token, "secret": secret}, f)
 
         return token, secret
-
-    def candidates(
-        self, items: Sequence[Item], artist: str, album: str, va_likely: bool
-    ) -> Iterable[AlbumInfo]:
-        return self.get_albums(f"{artist} {album}" if va_likely else album)
 
     def get_track_from_album(
         self, album_info: AlbumInfo, compare: Callable[[TrackInfo], float]
@@ -191,21 +217,19 @@ class DiscogsPlugin(MetadataSourcePlugin):
 
     def item_candidates(
         self, item: Item, artist: str, title: str
-    ) -> Iterable[TrackInfo]:
+    ) -> Iterator[TrackInfo]:
         albums = self.candidates([item], artist, title, False)
 
         def compare_func(track_info: TrackInfo) -> float:
             return string_dist(track_info.title, title)
 
         tracks = (self.get_track_from_album(a, compare_func) for a in albums)
-        return list(filter(None, tracks))
+        return filter(None, tracks)
 
     def album_for_id(self, album_id: str) -> AlbumInfo | None:
         """Fetches an album by its Discogs ID and returns an AlbumInfo object
         or None if the album is not found.
         """
-        self._log.debug("Searching for release {}", album_id)
-
         discogs_id = self._extract_id(album_id)
 
         if not discogs_id:
@@ -218,9 +242,7 @@ class DiscogsPlugin(MetadataSourcePlugin):
         except DiscogsAPIError as e:
             if e.status_code != 404:
                 self._log.debug(
-                    "API Error: {} (query: {})",
-                    e,
-                    result.data["resource_url"],
+                    "API Error: {} (query: {})", e, result.data["resource_url"]
                 )
                 if e.status_code == 401:
                     self.reset_auth()
@@ -238,8 +260,21 @@ class DiscogsPlugin(MetadataSourcePlugin):
                     return track
         return None
 
-    def get_albums(self, query: str) -> Iterable[AlbumInfo]:
-        """Returns a list of AlbumInfo objects for a discogs search query."""
+    def get_search_query_with_filters(
+        self,
+        query_type: QueryType,
+        items: Sequence[Item],
+        artist: str,
+        name: str,
+        va_likely: bool,
+    ) -> tuple[str, dict[str, str]]:
+        """Build a Discogs release query and fixed release-type filter.
+
+        The query is normalized to improve hit rates for punctuation-heavy album
+        names and medium suffixes that can reduce recall.
+        """
+
+        query = f"{artist} {name}" if va_likely else name
         # Strip non-word characters from query. Things like "!" and "-" can
         # cause a query to return no results, even if they match the artist or
         # album title. Use `re.UNICODE` flag to avoid stripping non-english
@@ -249,18 +284,31 @@ class DiscogsPlugin(MetadataSourcePlugin):
         # can also negate an otherwise positive result.
         query = re.sub(r"(?i)\b(CD|disc|vinyl)\s*\d+", "", query)
 
-        try:
-            results = self.discogs_client.search(query, type="release")
-            results.per_page = self.config["search_limit"].get()
-            releases = results.page(1)
-        except CONNECTION_ERRORS:
-            self._log.debug(
-                "Communication error while searching for {0!r}",
-                query,
-                exc_info=True,
+        filters: dict[str, str] = {"type": "release"}
+
+        if not items:
+            return query, filters
+
+        for tag, api_field in self.extra_discogs_field_by_tag.items():
+            most_common, _count = util.plurality(
+                item.get(tag) for item in items
             )
-            return []
-        return filter(None, map(self.get_album_info, releases))
+            if most_common is None:
+                continue
+
+            value = str(most_common)
+            if tag == "catalognum":
+                value = value.replace(" ", "")
+
+            filters[api_field] = value
+
+        return query, filters
+
+    def get_search_response(self, params: SearchParams) -> Sequence[IDResponse]:
+        """Search Discogs releases and return raw result mappings with IDs."""
+        results = self.discogs_client.search(params.query, **params.filters)
+        results.per_page = params.limit
+        return [r.data for r in results.page(1)]
 
     @cache
     def get_master_year(self, master_id: str) -> int | None:
@@ -275,9 +323,7 @@ class DiscogsPlugin(MetadataSourcePlugin):
         except DiscogsAPIError as e:
             if e.status_code != 404:
                 self._log.debug(
-                    "API Error: {} (query: {})",
-                    e,
-                    result.data["resource_url"],
+                    "API Error: {} (query: {})", e, result.data["resource_url"]
                 )
                 if e.status_code == 401:
                     self.reset_auth()
@@ -310,8 +356,7 @@ class DiscogsPlugin(MetadataSourcePlugin):
                 result.refresh()
             except CONNECTION_ERRORS:
                 self._log.debug(
-                    "Connection error in release lookup: {0}",
-                    result,
+                    "Connection error in release lookup: {0}", result
                 )
                 return None
 
@@ -352,13 +397,13 @@ class DiscogsPlugin(MetadataSourcePlugin):
         mediums = [t["medium"] for t in tracks]
         country = result.data.get("country")
         data_url = result.data.get("uri")
-        style = self.format(result.data.get("styles"))
-        base_genre = self.format(result.data.get("genres"))
+        # we swap genre and style since discogs genres are more general and
+        # styles more specific
+        styles: list[str] = result.data.get("genres") or []
+        genres: list[str] = result.data.get("styles") or []
 
-        if self.config["append_style_genre"] and style:
-            genre = self.config["separator"].as_str().join([base_genre, style])
-        else:
-            genre = base_genre
+        if self.config["append_style_genre"]:
+            genres.extend(styles)
 
         discogs_albumid = self._extract_id(result.data.get("uri"))
 
@@ -412,8 +457,10 @@ class DiscogsPlugin(MetadataSourcePlugin):
             releasegroup_id=master_id,
             catalognum=catalogno,
             country=country,
-            style=style,
-            genre=genre,
+            style=(
+                self.config["separator"].as_str().join(sorted(styles)) or None
+            ),
+            genres=sorted(genres),
             media=media,
             original_year=original_year,
             data_source=self.data_source,
@@ -434,18 +481,8 @@ class DiscogsPlugin(MetadataSourcePlugin):
 
         return None
 
-    def format(self, classification: Iterable[str]) -> str | None:
-        if classification:
-            return (
-                self.config["separator"].as_str().join(sorted(classification))
-            )
-        else:
-            return None
-
     def get_tracks(
-        self,
-        tracklist: list[Track],
-        albumartistinfo: ArtistState,
+        self, tracklist: list[Track], albumartistinfo: ArtistState
     ) -> list[TrackInfo]:
         """Returns a list of TrackInfo objects for a discogs tracklist."""
         try:
@@ -570,9 +607,7 @@ class DiscogsPlugin(MetadataSourcePlugin):
         return tracklist
 
     def _add_merged_subtracks(
-        self,
-        tracklist: list[Track],
-        subtracks: list[Track],
+        self, tracklist: list[Track], subtracks: list[Track]
     ) -> None:
         """Modify `tracklist` in place, merging a list of `subtracks` into
         a single track into `tracklist`."""

@@ -31,7 +31,7 @@ from beets.test import _common
 class UtilTest(unittest.TestCase):
     def test_open_anything(self):
         with _common.system_mock("Windows"):
-            assert util.open_anything() == "start"
+            assert util.open_anything() == 'cmd /c start ""'
 
         with _common.system_mock("Darwin"):
             assert util.open_anything() == "open"
@@ -111,11 +111,7 @@ class UtilTest(unittest.TestCase):
         assert exc_info.value.cmd == "taga \xc3\xa9"
 
     def test_case_sensitive_default(self):
-        path = util.bytestring_path(
-            util.normpath(
-                "/this/path/does/not/exist",
-            )
-        )
+        path = util.bytestring_path(util.normpath("/this/path/does/not/exist"))
 
         assert util.case_sensitive(path) == (platform.system() != "Windows")
 

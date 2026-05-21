@@ -27,14 +27,19 @@ from typing import TYPE_CHECKING, Any
 
 import mediafile
 
-from beets import autotag, config, library, plugins, util
+from beets import config, library, plugins, util
+from beets.autotag.hooks import AlbumMatch
+from beets.autotag.match import tag_album, tag_item
 from beets.dbcore.query import PathQuery
+from beets.util import extension
+from beets.util.extension import remux_mpeglayer3_wav
 
 from .state import ImportState
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from beets.autotag.hooks import TrackMatch
     from beets.autotag.match import Recommendation
 
     from .session import ImportSession
@@ -159,12 +164,12 @@ class ImportTask(BaseImportTask):
     """
 
     choice_flag: Action | None = None
-    match: autotag.AlbumMatch | autotag.TrackMatch | None = None
+    match: AlbumMatch | TrackMatch | None = None
 
     # Keep track of the current task item
     cur_album: str | None = None
     cur_artist: str | None = None
-    candidates: Sequence[autotag.AlbumMatch | autotag.TrackMatch] = []
+    candidates: Sequence[AlbumMatch | TrackMatch] | None = None
     rec: Recommendation | None = None
 
     def __init__(
@@ -178,9 +183,7 @@ class ImportTask(BaseImportTask):
         self.should_merge_duplicates = False
         self.is_album = True
 
-    def set_choice(
-        self, choice: Action | autotag.AlbumMatch | autotag.TrackMatch
-    ):
+    def set_choice(self, choice: Action | AlbumMatch | TrackMatch):
         """Given an AlbumMatch or TrackMatch object or an action constant,
         indicates that an action has been selected for this task.
 
@@ -249,19 +252,16 @@ class ImportTask(BaseImportTask):
         if self.choice_flag in (Action.ASIS, Action.RETAG):
             return self.items
         elif self.choice_flag == Action.APPLY and isinstance(
-            self.match, autotag.AlbumMatch
+            self.match, AlbumMatch
         ):
             return self.match.items
         else:
             return []
 
-    def apply_metadata(self):
+    def apply_metadata(self) -> None:
         """Copy metadata from match info to the items."""
-        if config["import"]["from_scratch"]:
-            for item in self.match.items:
-                item.clear()
-
-        autotag.apply_metadata(self.match.info, self.match.item_info_pairs)
+        if self.match:  # TODO: redesign to remove the conditional
+            self.match.apply_metadata()
 
     def duplicate_items(self, lib: library.Library):
         duplicate_items = []
@@ -270,14 +270,33 @@ class ImportTask(BaseImportTask):
         return duplicate_items
 
     def remove_duplicates(self, lib: library.Library):
-        duplicate_items = self.duplicate_items(lib)
-        log.debug("removing {} old duplicated items", len(duplicate_items))
-        for item in duplicate_items:
-            item.remove()
-            if lib.directory in util.ancestry(item.path):
-                log.debug("deleting duplicate {.filepath}", item)
-                util.remove(item.path)
-                util.prune_dirs(os.path.dirname(item.path), lib.directory)
+        duplicate_albums = self.find_duplicates(lib)
+        log.debug("removing {} old duplicate albums", len(duplicate_albums))
+
+        for album in duplicate_albums:
+            artpath = album.artpath
+
+            for item in album.items():
+                item.remove(with_album=False)
+                if lib.directory in util.ancestry(item.path):
+                    log.debug("deleting duplicate {.filepath}", item)
+                    util.remove(item.path)
+                    util.prune_dirs(
+                        os.path.dirname(item.path),
+                        lib.directory,
+                        clutter=config["clutter"].as_str_seq(),
+                    )
+
+            album.remove(with_items=False)
+
+            if artpath and lib.directory in util.ancestry(artpath):
+                log.debug("deleting duplicate album art {}", artpath)
+                util.remove(artpath)
+                util.prune_dirs(
+                    os.path.dirname(artpath),
+                    lib.directory,
+                    clutter=config["clutter"].as_str_seq(),
+                )
 
     def set_fields(self, lib: library.Library):
         """Sets the fields given at CLI or configuration to the specified
@@ -366,7 +385,7 @@ class ImportTask(BaseImportTask):
         restricted to only those IDs.
         """
         self.cur_artist, self.cur_album, (self.candidates, self.rec) = (
-            autotag.tag_album(self.items, search_ids=search_ids)
+            tag_album(self.items, search_ids=search_ids)
         )
 
     def find_duplicates(self, lib: library.Library) -> list[library.Album]:
@@ -430,14 +449,17 @@ class ImportTask(BaseImportTask):
         elif self.choice_flag in (Action.APPLY, Action.RETAG):
             # Applying autotagged metadata. Just get AA from the first
             # item.
-            if not self.items[0].albumartist:
-                changes["albumartist"] = self.items[0].artist
-            if not self.items[0].albumartists:
-                changes["albumartists"] = self.items[0].artists
-            if not self.items[0].mb_albumartistid:
-                changes["mb_albumartistid"] = self.items[0].mb_artistid
-            if not self.items[0].mb_albumartistids:
-                changes["mb_albumartistids"] = self.items[0].mb_artistids
+            first = self.items[0]
+            if not first.albumartist:
+                changes["albumartist"] = first.artist
+            if not first.albumartists:
+                changes["albumartists"] = first.artists or [first.artist]
+            if not first.mb_albumartistid:
+                changes["mb_albumartistid"] = first.mb_artistid
+            if not first.mb_albumartistids:
+                changes["mb_albumartistids"] = first.mb_artistids or [
+                    first.mb_artistid
+                ]
 
         # Apply new metadata.
         for item in self.items:
@@ -500,13 +522,13 @@ class ImportTask(BaseImportTask):
 
             self.album = lib.add_album(self.imported_items())
             if self.choice_flag == Action.APPLY and isinstance(
-                self.match, autotag.AlbumMatch
+                self.match, AlbumMatch
             ):
                 # Copy album flexible fields to the DB
                 # TODO: change the flow so we create the `Album` object earlier,
                 #   and we can move this into `self.apply_metadata`, just like
                 #   is done for tracks.
-                autotag.apply_album_metadata(self.match.info, self.album)
+                self.match.apply_album_metadata(self.album)
                 self.album.store()
 
             self.reimport_metadata(lib)
@@ -679,19 +701,12 @@ class SingletonImportTask(ImportTask):
     def imported_items(self):
         return [self.item]
 
-    def apply_metadata(self):
-        if config["import"]["from_scratch"]:
-            self.item.clear()
-        autotag.apply_item_metadata(self.item, self.match.info)
-
     def _emit_imported(self, lib):
         for item in self.imported_items():
             plugins.send("item_imported", lib=lib, item=item)
 
     def lookup_candidates(self, search_ids: list[str]) -> None:
-        self.candidates, self.rec = autotag.tag_item(
-            self.item, search_ids=search_ids
-        )
+        self.candidates, self.rec = tag_item(self.item, search_ids=search_ids)
 
     def find_duplicates(self, lib: library.Library) -> list[library.Item]:  # type: ignore[override] # Need splitting Singleton and Album tasks into separate classes
         """Return a list of items from `lib` that have the same artist
@@ -715,6 +730,20 @@ class SingletonImportTask(ImportTask):
         return found_items
 
     duplicate_items = find_duplicates
+
+    def remove_duplicates(self, lib: library.Library):
+        duplicate_items = self.find_duplicates(lib)
+        log.debug("removing {} old duplicated items", len(duplicate_items))
+        for item in duplicate_items:
+            item.remove()
+            if lib.directory in util.ancestry(item.path):
+                log.debug("deleting duplicate {.filepath}", item)
+                util.remove(item.path)
+                util.prune_dirs(
+                    os.path.dirname(item.path),
+                    lib.directory,
+                    clutter=config["clutter"].as_str_seq(),
+                )
 
     def add(self, lib):
         with lib.transaction():
@@ -803,19 +832,27 @@ ArchiveHandler = tuple[
 class ArchiveImportTask(SentinelImportTask):
     """An import task that represents the processing of an archive.
 
-    `toppath` must be a `zip`, `tar`, or `rar` archive. Archive tasks
-    serve two purposes:
+    `toppath` must be a `zip`, `tar`, `rar`, or `7z` archive. Archive tasks
+    serve three purposes:
     - First, it will unarchive the files to a temporary directory and
       return it. The client should read tasks from the resulting
       directory and send them through the pipeline.
     - Second, it will clean up the temporary directory when it proceeds
       through the pipeline. The client should send the archive task
       after sending the rest of the music tasks to make this work.
+    - Third, when the import mode is ``move`` and every file in the
+      archive was successfully imported, it will remove the source
+      archive itself. Archives are preserved on partial imports and in
+      non-move modes.
     """
 
     def __init__(self, toppath):
         super().__init__(toppath, ())
         self.extracted = False
+        # ``extract()`` reassigns ``self.toppath`` to the temp extraction
+        # directory; here we track the original archive location so
+        # ``cleanup()`` can remove it when the import mode demands.
+        self.archive_path = toppath
 
     @classmethod
     def is_archive(cls, path):
@@ -862,13 +899,37 @@ class ArchiveImportTask(SentinelImportTask):
         return _handlers
 
     def cleanup(self, copy=False, delete=False, move=False):
-        """Removes the temporary directory the archive was extracted to."""
-        if self.extracted and self.toppath:
+        """Remove the temporary extraction directory and optionally the archive.
+
+        In ``move`` mode, if the extraction directory is empty after the
+        pipeline has run (i.e. every file in the archive was successfully
+        imported) also remove the source archive. Archives are preserved on
+        partial imports and in non-move modes.
+        """
+        if not self.extracted:
+            return
+
+        all_files_imported = move and not any(
+            files for _, _, files in os.walk(util.syspath(self.toppath))
+        )
+
+        log.debug(
+            "Removing extracted directory: {}",
+            util.displayable_path(self.toppath),
+        )
+        shutil.rmtree(util.syspath(self.toppath))
+
+        if all_files_imported:
             log.debug(
-                "Removing extracted directory: {}",
-                util.displayable_path(self.toppath),
+                "Removing imported archive: {}",
+                util.displayable_path(self.archive_path),
             )
-            shutil.rmtree(util.syspath(self.toppath))
+            util.remove(self.archive_path)
+        elif move:
+            log.debug(
+                "Not removing partially imported archive: {}",
+                util.displayable_path(self.archive_path),
+            )
 
     def extract(self):
         """Extracts the archive to a temporary directory and sets
@@ -1077,22 +1138,41 @@ class ImportTaskFactory:
         If an item cannot be read, return `None` instead and log an
         error.
         """
+
+        # Check if the file has an extension,
+        # Add an extension if there isn't one.
+        if os.path.isfile(path):
+            path = extension.fix_extension(path, logger=log)
+
+        if config["import"]["remux_mp3_in_wav"].get(bool):
+            mp3_path = remux_mpeglayer3_wav(path)
+            if mp3_path:
+                log.info(
+                    "Remuxed MPEGLAYER3 WAV to MP3: {}",
+                    util.displayable_path(mp3_path),
+                )
+                path = mp3_path
+
         try:
             return library.Item.from_path(path)
         except library.ReadError as exc:
             if isinstance(exc.reason, mediafile.FileTypeError):
-                # Silently ignore non-music files.
+                # Silently ignore other non-music files.
                 pass
-            elif isinstance(exc.reason, mediafile.UnreadableFileError):
-                log.warning("unreadable file: {}", util.displayable_path(path))
-            else:
-                log.error(
-                    "error reading {}: {}", util.displayable_path(path), exc
-                )
 
 
-MULTIDISC_MARKERS = (rb"dis[ck]", rb"cd")
-MULTIDISC_PAT_FMT = rb"^(.*%s[\W_]*)\d"
+_MULTIDISC_MARKERS = (
+    rb"dis[ck]",
+    rb"cd",
+    rb"cassette",
+    rb"digital\s+media",
+    rb"vinyl",
+)
+
+MULTIDISC_PATTERNS = [
+    re.compile(rb"^(.*" + marker + rb"[\W_]*)\d", re.I)
+    for marker in _MULTIDISC_MARKERS
+]
 
 
 def is_subdir_of_any_in_list(path, dirs):
@@ -1145,10 +1225,7 @@ def albums_in_dir(path: util.PathBytes):
         # 1") or it contains no items but only directories that are
         # named in this way.
         start_collapsing = False
-        for marker in MULTIDISC_MARKERS:
-            # We're using replace on %s due to lack of .format() on bytestrings
-            p = MULTIDISC_PAT_FMT.replace(b"%s", marker)
-            marker_pat = re.compile(p, re.I)
+        for marker_pat in MULTIDISC_PATTERNS:
             match = marker_pat.match(os.path.basename(root))
 
             # Is this directory the root of a nested multi-disc album?

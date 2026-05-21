@@ -34,7 +34,13 @@ from beets.library import Album
 from beets.test import _common
 from beets.test._common import item
 from beets.test.helper import BeetsTestCase, ItemInDBTestCase, capture_log
-from beets.util import as_string, bytestring_path, normpath, syspath
+from beets.util import (
+    as_string,
+    bytestring_path,
+    normpath,
+    path_as_posix,
+    syspath,
+)
 
 # Shortcut to path normalization.
 np = util.normpath
@@ -56,30 +62,23 @@ class LoadTest(ItemInDBTestCase):
 
 class StoreTest(ItemInDBTestCase):
     def test_store_changes_database_value(self):
-        self.i.year = 1987
+        new_year = 1987
+        self.i.year = new_year
         self.i.store()
-        new_year = (
-            self.lib._connection()
-            .execute("select year from items where title = ?", (self.i.title,))
-            .fetchone()["year"]
-        )
-        assert new_year == 1987
+
+        assert self.lib.get_item(self.i.id).year == new_year
 
     def test_store_only_writes_dirty_fields(self):
-        original_genre = self.i.genre
-        self.i._values_fixed["genre"] = "beatboxing"  # change w/o dirtying
+        new_year = 1987
+        self.i._values_fixed["year"] = new_year  # change w/o dirtying
         self.i.store()
-        new_genre = (
-            self.lib._connection()
-            .execute("select genre from items where title = ?", (self.i.title,))
-            .fetchone()["genre"]
-        )
-        assert new_genre == original_genre
+
+        assert self.lib.get_item(self.i.id).year != new_year
 
     def test_store_clears_dirty_flags(self):
-        self.i.composer = "tvp"
+        self.i.composers = ["tvp"]
         self.i.store()
-        assert "composer" not in self.i._dirty
+        assert "composers" not in self.i._dirty
 
     def test_store_album_cascades_flex_deletes(self):
         album = Album(flex1="Flex-1")
@@ -104,8 +103,8 @@ class AddTest(BeetsTestCase):
         new_grouping = (
             self.lib._connection()
             .execute(
-                "select grouping from items where composer = ?",
-                (self.i.composer,),
+                "select grouping from items where composers = ?",
+                (self.i._type("composers").to_sql(self.i.composers),),
             )
             .fetchone()["grouping"]
         )
@@ -119,8 +118,8 @@ class AddTest(BeetsTestCase):
         new_grouping = (
             self.lib._connection()
             .execute(
-                "select grouping from items where composer = ?",
-                (self.i.composer,),
+                "select grouping from items where composers = ?",
+                (i._type("composers").to_sql(i.composers),),
             )
             .fetchone()["grouping"]
         )
@@ -130,11 +129,7 @@ class AddTest(BeetsTestCase):
         """Test library.add emits only one database_change event."""
         self.item = _common.item()
         self.item.path = beets.util.normpath(
-            os.path.join(
-                self.temp_dir,
-                b"a",
-                b"b.mp3",
-            )
+            os.path.join(self.temp_dir, b"a", b"b.mp3")
         )
         self.item.album = "a"
         self.item.title = "b"
@@ -337,6 +332,33 @@ class DestinationTest(BeetsTestCase):
         self.lib.directory = b"one"
         self.lib.path_formats = [("default", "two"), ("comp:true", "three")]
         assert self.i.destination() == np("one/three")
+
+    def test_multi_value_string_query_path(self):
+        self.i.genres = ["Classical"]
+        self.lib.directory = b"one"
+        self.lib.path_formats = [
+            ("default", "two"),
+            ("genres:=~Classical", "three"),
+        ]
+        assert self.i.destination() == np("one/three")
+
+    def test_multi_value_match_query_path(self):
+        self.i.genres = ["Classical"]
+        self.lib.directory = b"one"
+        self.lib.path_formats = [
+            ("default", "two"),
+            ("genres:=Classical", "three"),
+        ]
+        assert self.i.destination() == np("one/three")
+
+    def test_multi_value_string_query_path_no_substring_match(self):
+        self.i.genres = ["Neoclassical"]
+        self.lib.directory = b"one"
+        self.lib.path_formats = [
+            ("default", "two"),
+            ("genres:=~Classical", "three"),
+        ]
+        assert self.i.destination() == np("one/two")
 
     def test_albumtype_query_path(self):
         self.i.comp = True
@@ -688,14 +710,14 @@ class DestinationFunctionTest(BeetsTestCase, PathFormattingMixin):
         self._assert_dest(b"/base/not_played")
 
     def test_first(self):
-        self.i.genres = "Pop; Rock; Classical Crossover"
-        self._setf("%first{$genres}")
-        self._assert_dest(b"/base/Pop")
+        self.i.albumtypes = ["album", "compilation"]
+        self._setf("%first{$albumtypes}")
+        self._assert_dest(b"/base/album")
 
     def test_first_skip(self):
-        self.i.genres = "Pop; Rock; Classical Crossover"
-        self._setf("%first{$genres,1,2}")
-        self._assert_dest(b"/base/Classical Crossover")
+        self.i.albumtype = "album; ep; compilation"
+        self._setf("%first{$albumtype,1,2}")
+        self._assert_dest(b"/base/compilation")
 
     def test_first_different_sep(self):
         self._setf("%first{Alice / Bob / Eve,2,0, / , & }")
@@ -899,21 +921,15 @@ class PluginDestinationTest(BeetsTestCase):
         self._assert_dest(b"the artist $foo")
 
     def test_plugin_value_not_substituted(self):
-        self._tv_map = {
-            "foo": "bar",
-        }
+        self._tv_map = {"foo": "bar"}
         self._assert_dest(b"the artist bar")
 
     def test_plugin_value_overrides_attribute(self):
-        self._tv_map = {
-            "artist": "bar",
-        }
+        self._tv_map = {"artist": "bar"}
         self._assert_dest(b"bar $foo")
 
     def test_plugin_value_sanitized(self):
-        self._tv_map = {
-            "foo": "bar/baz",
-        }
+        self._tv_map = {"foo": "bar/baz"}
         self._assert_dest(b"the artist bar_baz")
 
 
@@ -932,10 +948,10 @@ class AlbumInfoTest(BeetsTestCase):
 
     def test_albuminfo_stores_art(self):
         ai = self.lib.get_album(self.i)
-        ai.artpath = "/my/great/art"
+        ai.artpath = os.fsdecode(np("/my/great/art"))
         ai.store()
         new_ai = self.lib.get_album(self.i)
-        assert new_ai.artpath == b"/my/great/art"
+        assert new_ai.artpath == np("/my/great/art")
 
     def test_albuminfo_for_two_items_doesnt_duplicate_row(self):
         i2 = item(self.lib)
@@ -1078,7 +1094,7 @@ class PathStringTest(BeetsTestCase):
         self.i.path = path
         self.i.store()
         i = next(iter(self.lib.items()))
-        assert i.path == path
+        assert i.path == os.path.join(self.libdir, path)
 
     def test_special_char_path_added_to_database(self):
         self.i.remove()
@@ -1087,7 +1103,7 @@ class PathStringTest(BeetsTestCase):
         i.path = path
         self.lib.add(i)
         i = next(iter(self.lib.items()))
-        assert i.path == path
+        assert i.path == os.path.join(self.libdir, path)
 
     def test_destination_returns_bytestring(self):
         self.i.artist = "b\xe1r"
@@ -1101,12 +1117,18 @@ class PathStringTest(BeetsTestCase):
         assert isinstance(dest, bytes)
 
     def test_artpath_stores_special_chars(self):
-        path = b"b\xe1r"
+        path = bytestring_path("b\xe1r")
         alb = self.lib.add_album([self.i])
         alb.artpath = path
         alb.store()
+        stored_path = (
+            self.lib._connection()
+            .execute("select artpath from albums where id=?", (alb.id,))
+            .fetchone()[0]
+        )
         alb = self.lib.get_album(self.i)
-        assert path == alb.artpath
+        assert stored_path == path
+        assert alb.artpath == os.path.join(self.libdir, path)
 
     def test_sanitize_path_with_special_chars(self):
         path = "b\xe1r?"
@@ -1130,6 +1152,22 @@ class PathStringTest(BeetsTestCase):
         )
         alb = self.lib.get_album(alb.id)
         assert isinstance(alb.artpath, bytes)
+
+    def test_relative_path_is_stored(self):
+        relative_path = os.path.join(b"abc", b"foo.mp3")
+        absolute_path = os.path.join(self.libdir, relative_path)
+        self.i.path = absolute_path
+        self.i.store()
+        stored_path = (
+            self.lib._connection()
+            .execute("select path from items where id=?", (self.i.id,))
+            .fetchone()[0]
+        )
+        album = self.lib.add_album([self.i])
+
+        assert self.i.path == absolute_path
+        assert stored_path == path_as_posix(relative_path)
+        assert album.path == os.path.dirname(absolute_path)
 
 
 class MtimeTest(BeetsTestCase):
@@ -1301,6 +1339,17 @@ class ItemReadTest(unittest.TestCase):
             item.read("/thisfiledoesnotexist")
 
 
+class ItemReadGenreTest(BeetsTestCase):
+    def test_read_semicolon_delimited_genres(self):
+        """Semicolon-delimited genre tags are split into individual genres on read."""
+        path = self.create_mediafile_fixture()
+        mf = MediaFile(syspath(path))
+        mf.genres = ["Jazz; Funk; Soul"]
+        mf.save()
+        item = beets.library.Item.from_path(path)
+        assert item.genres == ["Jazz", "Funk", "Soul"]
+
+
 class FilesizeTest(BeetsTestCase):
     def test_filesize(self):
         item = self.add_item_fixture()
@@ -1309,6 +1358,42 @@ class FilesizeTest(BeetsTestCase):
     def test_nonexistent_file(self):
         item = beets.library.Item()
         assert item.filesize == 0
+
+
+class ItemPruneDirsClutterTest(BeetsTestCase):
+    """Regression tests: prune_dirs respects config["clutter"] during move/remove."""
+
+    def _drop_clutter(self, directory, filename=b"unwanted.log"):
+        """Create a clutter file in *directory* (bytes path)."""
+        path = os.path.join(directory, filename)
+        with open(syspath(path), "w"):
+            pass
+        return path
+
+    def test_move_prunes_dir_with_config_clutter(self):
+        """After moving an item, old dir is removed even when only clutter remains."""
+        config["clutter"] = ["*.log"]
+        item = self.add_item_fixture()
+        old_dir = os.path.dirname(item.path)
+        self._drop_clutter(old_dir)
+
+        # Change artist so the destination path differs, forcing a real move.
+        item.artist = "new artist"
+        item.store()
+        item.move()
+
+        assert not os.path.exists(syspath(old_dir))
+
+    def test_remove_prunes_dir_with_config_clutter(self):
+        """After deleting an item, its dir is removed even when only clutter remains."""
+        config["clutter"] = ["*.log"]
+        item = self.add_item_fixture()
+        old_dir = os.path.dirname(item.path)
+        self._drop_clutter(old_dir)
+
+        item.remove(delete=True)
+
+        assert not os.path.exists(syspath(old_dir))
 
 
 class ParseQueryTest(unittest.TestCase):

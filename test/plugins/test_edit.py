@@ -17,15 +17,15 @@ from typing import ClassVar
 from unittest.mock import patch
 
 from beets.dbcore.query import TrueQuery
+from beets.importer import Action
 from beets.library import Item
-from beets.test import _common
 from beets.test.helper import (
     AutotagImportTestCase,
     AutotagStub,
     BeetsTestCase,
+    IOMixin,
     PluginMixin,
     TerminalImportMixin,
-    control_stdin,
 )
 
 
@@ -103,24 +103,25 @@ class EditMixin(PluginMixin):
         """
         m = ModifyFileMocker(**modify_file_args)
         with patch("beetsplug.edit.edit", side_effect=m.action):
-            with control_stdin("\n".join(stdin)):
-                self.importer.run()
+            for char in stdin:
+                self.importer.add_choice(char)
+            self.importer.run()
 
     def run_mocked_command(self, modify_file_args={}, stdin=[], args=[]):
         """Run the edit command, with mocked stdin and yaml writing, and
         passing `args` to `run_command`."""
         m = ModifyFileMocker(**modify_file_args)
         with patch("beetsplug.edit.edit", side_effect=m.action):
-            with control_stdin("\n".join(stdin)):
-                self.run_command("edit", *args)
+            for char in stdin:
+                self.io.addinput(char)
+            self.run_command("edit", *args)
 
 
-@_common.slow_test()
 @patch("beets.library.Item.write")
-class EditCommandTest(EditMixin, BeetsTestCase):
+class EditCommandTest(IOMixin, EditMixin, BeetsTestCase):
     """Black box tests for `beetsplug.edit`. Command line interaction is
-    simulated using `test.helper.control_stdin()`, and yaml editing via an
-    external editor is simulated using `ModifyFileMocker`.
+    simulated using mocked stdin, and yaml editing via an external editor is
+    simulated using `ModifyFileMocker`.
     """
 
     ALBUM_COUNT = 1
@@ -187,9 +188,7 @@ class EditCommandTest(EditMixin, BeetsTestCase):
 
         assert mock_write.call_count == self.TRACK_COUNT
         self.assertItemFieldsModified(
-            self.album.items(),
-            self.items_orig,
-            ["title", "mtime"],
+            self.album.items(), self.items_orig, ["title", "mtime"]
         )
 
     def test_title_edit_keep_editing_then_cancel(self, mock_write):
@@ -201,11 +200,7 @@ class EditCommandTest(EditMixin, BeetsTestCase):
         )
 
         assert mock_write.call_count == 0
-        self.assertItemFieldsModified(
-            self.album.items(),
-            self.items_orig,
-            [],
-        )
+        self.assertItemFieldsModified(self.album.items(), self.items_orig, [])
 
     def test_noedit(self, mock_write):
         """Do not edit anything."""
@@ -312,7 +307,6 @@ class EditCommandTest(EditMixin, BeetsTestCase):
         assert mock_write.call_count == 0
 
 
-@_common.slow_test()
 class EditDuringImporterTestCase(
     EditMixin, TerminalImportMixin, AutotagImportTestCase
 ):
@@ -329,7 +323,6 @@ class EditDuringImporterTestCase(
         self.items_orig = [Item.from_path(f.path) for f in self.import_media]
 
 
-@_common.slow_test()
 class EditDuringImporterNonSingletonTest(EditDuringImporterTestCase):
     def setUp(self):
         super().setUp()
@@ -350,13 +343,8 @@ class EditDuringImporterNonSingletonTest(EditDuringImporterTestCase):
         self.assertItemFieldsModified(
             self.lib.items(),
             self.items_orig,
-            ["title"],
-            [
-                *self.IGNORED,
-                "albumartist",
-                "mb_albumartistid",
-                "mb_albumartistids",
-            ],
+            ["title", "albumartist", "albumartists"],
+            [*self.IGNORED, "mb_albumartistid", "mb_albumartistids"],
         )
         assert all("Edited Track" in i.title for i in self.lib.items())
 
@@ -412,7 +400,7 @@ class EditDuringImporterNonSingletonTest(EditDuringImporterTestCase):
         self.run_mocked_interpreter(
             {},
             # 1, Apply changes.
-            ["1", "a"],
+            ["1", Action.APPLY],
         )
 
         # Retag and edit track titles.  On retag, the importer will reset items
@@ -469,7 +457,6 @@ class EditDuringImporterNonSingletonTest(EditDuringImporterTestCase):
         assert all("match " in i.mb_trackid for i in self.lib.items())
 
 
-@_common.slow_test()
 class EditDuringImporterSingletonTest(EditDuringImporterTestCase):
     def setUp(self):
         super().setUp()

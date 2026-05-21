@@ -26,6 +26,8 @@ from beets.library import Album, Item
 from beets.plugins import BeetsPlugin
 from beets.ui import UserError
 
+from .rewrite import apply_rewrite_rules
+
 
 def rewriter(field, simple_rules, advanced_rules):
     """Template field function factory.
@@ -38,10 +40,10 @@ def rewriter(field, simple_rules, advanced_rules):
 
     def fieldfunc(item):
         value = item._values_fixed[field]
-        for pattern, replacement in simple_rules:
-            if pattern.match(value.lower()):
-                # Rewrite activated.
-                return replacement
+        if (new_value := apply_rewrite_rules(value, simple_rules)) != value:
+            # Rewrite activated.
+            return new_value
+
         for query, replacement in advanced_rules:
             if query.match(item):
                 # Rewrite activated.
@@ -68,7 +70,7 @@ class AdvancedRewritePlugin(BeetsPlugin):
                     {
                         "match": str,
                         "replacements": confuse.MappingValues(
-                            confuse.OneOf([str, confuse.Sequence(str)]),
+                            confuse.OneOf([str, confuse.Sequence(str)])
                         ),
                     },
                 ]
@@ -130,10 +132,7 @@ class AdvancedRewritePlugin(BeetsPlugin):
                         "Advanced rewrites must have at least one replacement"
                     )
                 query = query_from_strings(
-                    AndQuery,
-                    Item,
-                    prefixes={},
-                    query_parts=shlex.split(match),
+                    AndQuery, Item, prefixes={}, query_parts=shlex.split(match)
                 )
                 for fieldname, replacement in replacements.items():
                     if fieldname not in Item._fields:

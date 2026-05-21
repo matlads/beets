@@ -18,20 +18,23 @@ from __future__ import annotations
 
 import collections
 import time
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
 import requests
 
-from beets import ui
-from beets.autotag import AlbumInfo, TrackInfo
+from beets import config, ui
+from beets.autotag.hooks import AlbumInfo, TrackInfo
 from beets.dbcore import types
+from beets.exceptions import UserError
 from beets.metadata_plugins import IDResponse, SearchApiMetadataSourcePlugin
+
+VARIOUS_ARTISTS_ID = 5080
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from beets.library import Item, Library
-    from beets.metadata_plugins import SearchFilter
+    from beets.metadata_plugins import QueryType, SearchParams
 
     from ._typing import JSONDict
 
@@ -94,7 +97,7 @@ class DeezerPlugin(SearchApiMetadataSourcePlugin[IDResponse]):
             month = None
             day = None
         else:
-            raise ui.UserError(
+            raise UserError(
                 f"Invalid `release_date` returned by {self.data_source} API: "
                 f"{release_date!r}"
             )
@@ -109,10 +112,7 @@ class DeezerPlugin(SearchApiMetadataSourcePlugin[IDResponse]):
         if not tracks_data:
             return None
         while "next" in tracks_obj:
-            tracks_obj = requests.get(
-                tracks_obj["next"],
-                timeout=10,
-            ).json()
+            tracks_obj = requests.get(tracks_obj["next"], timeout=10).json()
             tracks_data.extend(tracks_obj["data"])
 
         tracks = []
@@ -125,19 +125,23 @@ class DeezerPlugin(SearchApiMetadataSourcePlugin[IDResponse]):
         for track in tracks:
             track.medium_total = medium_totals[track.medium]
 
+        is_va = str(album_data["artist"]["id"]) == str(VARIOUS_ARTISTS_ID)
+        if is_va:
+            va_name = config["va_name"].as_str()
+            artist = va_name
+
         return AlbumInfo(
             album=album_data["title"],
             album_id=deezer_id,
             deezer_album_id=deezer_id,
             artist=artist,
-            artist_credit=self.get_artist([album_data["artist"]])[0],
-            artist_id=artist_id,
+            artist_credit=(
+                artist if is_va else self.get_artist([album_data["artist"]])[0]
+            ),
+            artist_id=str(artist_id),
             tracks=tracks,
             albumtype=album_data["record_type"],
-            va=(
-                len(album_data["contributors"]) == 1
-                and (artist or "").lower() == "various artists"
-            ),
+            va=is_va,
             year=year,
             month=month,
             day=day,
@@ -206,7 +210,7 @@ class DeezerPlugin(SearchApiMetadataSourcePlugin[IDResponse]):
             deezer_track_id=track_data["id"],
             isrc=track_data.get("isrc"),
             artist=artist,
-            artist_id=artist_id,
+            artist_id=str(artist_id),
             length=track_data["duration"],
             index=track_data.get("track_position"),
             medium=track_data.get("disk_number"),
@@ -217,58 +221,34 @@ class DeezerPlugin(SearchApiMetadataSourcePlugin[IDResponse]):
             deezer_updated=time.time(),
         )
 
-    def _search_api(
+    def get_search_query_with_filters(
         self,
-        query_type: Literal[
-            "album",
-            "track",
-            "artist",
-            "history",
-            "playlist",
-            "podcast",
-            "radio",
-            "user",
-        ],
-        filters: SearchFilter,
-        query_string: str = "",
-    ) -> Sequence[IDResponse]:
-        """Query the Deezer Search API for the specified ``query_string``, applying
-        the provided ``filters``.
+        query_type: QueryType,
+        items: Sequence[Item],
+        artist: str,
+        name: str,
+        va_likely: bool,
+    ) -> tuple[str, dict[str, str]]:
+        query = f'album:"{name}"' if query_type == "album" else name
+        if query_type == "track" or not va_likely:
+            query += f' artist:"{artist}"'
 
-        :param filters: Field filters to apply.
-        :param query_string: Additional query to include in the search.
-        :return: JSON data for the class:`Response <Response>` object or None
-            if no search results are returned.
-        """
-        query = self._construct_search_query(
-            query_string=query_string, filters=filters
+        return query, {}
+
+    def get_search_response(self, params: SearchParams) -> list[IDResponse]:
+        """Search Deezer and return the raw result payload entries."""
+
+        response = requests.get(
+            f"{self.search_url}{params.query_type}",
+            params={
+                **params.filters,
+                "q": params.query,
+                "limit": str(params.limit),
+            },
+            timeout=10,
         )
-        self._log.debug("Searching {.data_source} for '{}'", self, query)
-        try:
-            response = requests.get(
-                f"{self.search_url}{query_type}",
-                params={
-                    "q": query,
-                    "limit": self.config["search_limit"].get(),
-                },
-                timeout=10,
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            self._log.error(
-                "Error fetching data from {.data_source} API\n Error: {}",
-                self,
-                e,
-            )
-            return ()
-        response_data: Sequence[IDResponse] = response.json().get("data", [])
-        self._log.debug(
-            "Found {} result(s) from {.data_source} for '{}'",
-            len(response_data),
-            self,
-            query,
-        )
-        return response_data
+        response.raise_for_status()
+        return response.json()["data"]
 
     def deezerupdate(self, items: Sequence[Item], write: bool):
         """Obtain rank information from Deezer."""

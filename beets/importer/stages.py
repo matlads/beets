@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import itertools
 import logging
 from typing import TYPE_CHECKING
@@ -230,6 +231,7 @@ def import_asis(session: ImportSession, task: ImportTask):
 
     log.info("{}", displayable_path(task.paths))
     task.set_choice(Action.ASIS)
+    _resolve_duplicates(session, task)
     _apply_choice(session, task)
 
 
@@ -297,9 +299,7 @@ def manipulate_files(session: ImportSession, task: ImportTask):
             operation = None
 
         task.manipulate_files(
-            session=session,
-            operation=operation,
-            write=session.config["write"],
+            session=session, operation=operation, write=session.config["write"]
         )
 
     # Progress, cleanup, and event.
@@ -389,4 +389,14 @@ def _extend_pipeline(tasks, *stages):
         task_iter = tasks
 
     ipl = pipeline.Pipeline([task_iter, *list(stages)])
-    return pipeline.multiple(ipl.pull())
+    ctx = contextvars.copy_context()
+
+    def _ctx_iter():
+        gen = ipl.pull()
+        while True:
+            try:
+                yield ctx.run(next, gen)
+            except StopIteration:
+                return
+
+    return pipeline.multiple(_ctx_iter())

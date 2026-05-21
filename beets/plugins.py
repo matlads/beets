@@ -37,7 +37,7 @@ from beets.util.deprecation import deprecate_for_maintainers, deprecate_for_user
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
 
-    from confuse import ConfigView
+    from confuse import Subview
 
     from beets.dbcore import Query
     from beets.dbcore.db import FieldQueryType
@@ -96,6 +96,10 @@ EventType = Literal[
     "pluginload",
     "trackinfo_received",
     "write",
+    # convert plugin
+    "after_convert",
+    # smartplaylist plugin
+    "smartplaylist_update",
 ]
 # Global logger.
 log = logging.getLogger("beets")
@@ -162,7 +166,7 @@ class BeetsPlugin(metaclass=BeetsPluginMeta):
     album_template_fields: TFuncMap[Album]
 
     name: str
-    config: ConfigView
+    config: Subview
     early_import_stages: list[ImportStageFunc]
     import_stages: list[ImportStageFunc]
 
@@ -280,8 +284,7 @@ class BeetsPlugin(metaclass=BeetsPluginMeta):
         return ()
 
     def _set_stage_log_level(
-        self,
-        stages: list[ImportStageFunc],
+        self, stages: list[ImportStageFunc]
     ) -> list[ImportStageFunc]:
         """Adjust all the stages in `stages` to WARNING logging level."""
         return [
@@ -310,9 +313,7 @@ class BeetsPlugin(metaclass=BeetsPluginMeta):
         return self._set_stage_log_level(self.import_stages)
 
     def _set_log_level_and_params(
-        self,
-        base_log_level: int,
-        func: Callable[P, Ret],
+        self, base_log_level: int, func: Callable[P, Ret]
     ) -> Callable[P, Ret]:
         """Wrap `func` to temporarily set this plugin's logger level to
         `base_log_level` + config options (and restore it to its previous

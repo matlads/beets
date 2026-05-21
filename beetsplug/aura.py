@@ -33,15 +33,8 @@ from flask import (
 from typing_extensions import Self
 
 from beets import config
-from beets.dbcore.query import (
-    AndQuery,
-    FixedFieldSort,
-    MatchQuery,
-    MultipleSort,
-    NotQuery,
-    RegexpQuery,
-    SlowFieldSort,
-)
+from beets.dbcore.query import AndQuery, MatchQuery, NotQuery, RegexpQuery
+from beets.dbcore.sort import FixedFieldSort, MultipleSort, SlowFieldSort
 from beets.library import Album, Item
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand, _open_library
@@ -79,10 +72,11 @@ TRACK_ATTR_MAP = {
     "month": "month",
     "day": "day",
     "bpm": "bpm",
-    "genre": "genre",
+    "genre": "genres",
+    "genres": "genres",
     "recording-mbid": "mb_trackid",  # beets trackid is MB recording
     "track-mbid": "mb_releasetrackid",
-    "composer": "composer",
+    "composer": "composers",
     "albumartist": "albumartist",
     "comments": "comments",
     # Optional for Audio Metadata
@@ -109,7 +103,8 @@ ALBUM_ATTR_MAP = {
     "year": "year",
     "month": "month",
     "day": "day",
-    "genre": "genre",
+    "genre": "genres",
+    "genres": "genres",
     "release-mbid": "mb_albumid",
     "release-group-mbid": "mb_releasegroupid",
 }

@@ -25,12 +25,7 @@ from beets.plugins import BeetsPlugin
 class IPFSPlugin(BeetsPlugin):
     def __init__(self):
         super().__init__()
-        self.config.add(
-            {
-                "auto": True,
-                "nocopy": False,
-            }
-        )
+        self.config.add({"auto": True, "nocopy": False})
 
         if self.config["auto"]:
             self.import_stages = [self.auto_add]
@@ -281,13 +276,16 @@ class IPFSPlugin(BeetsPlugin):
 
     def ipfs_added_albums(self, rlib, tmpname):
         """Returns a new library with only albums/items added to ipfs"""
-        tmplib = library.Library(tmpname)
-        for album in rlib.albums():
-            try:
-                if album.ipfs:
-                    self.create_new_album(album, tmplib)
-            except AttributeError:
-                pass
+        tmplib = library.Library(
+            tmpname, directory="/ipfs/", set_music_dir=False
+        )
+        with tmplib.music_dir_context():
+            for album in rlib.albums():
+                try:
+                    if album.ipfs:
+                        self.create_new_album(album, tmplib)
+                except AttributeError:
+                    pass
         return tmplib
 
     def create_new_album(self, album, tmplib):
@@ -300,7 +298,7 @@ class IPFSPlugin(BeetsPlugin):
                 pass
             item_path = os.fsdecode(os.path.basename(item.path))
             # Clear current path from item
-            item.path = f"/ipfs/{album.ipfs}/{item_path}"
+            item.path = f"{album.ipfs}/{item_path}"
 
             item.id = None
             items.append(item)

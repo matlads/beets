@@ -4,11 +4,12 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from beets import config, ui
-from beets.test.helper import BeetsTestCase
+from beets import config
+from beets.exceptions import UserError
+from beets.test.helper import BeetsTestCase, IOMixin
 
 
-class ConfigCommandTest(BeetsTestCase):
+class ConfigCommandTest(IOMixin, BeetsTestCase):
     def setUp(self):
         super().setUp()
         for k in ("VISUAL", "EDITOR"):
@@ -114,7 +115,7 @@ class ConfigCommandTest(BeetsTestCase):
         msg_match = "Could not edit configuration.*here is problem"
         with (
             patch("os.execlp", side_effect=OSError("here is problem")),
-            pytest.raises(ui.UserError, match=msg_match),
+            pytest.raises(UserError, match=msg_match),
         ):
             self.run_command("config", "-e")
 

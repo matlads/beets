@@ -10,8 +10,8 @@ from shutil import rmtree
 
 from beets.dbcore.query import PathQuery
 from beets.plugins import BeetsPlugin
-from beets.ui import colorize as colorize_text
 from beets.ui import input_options
+from beets.util.color import colorize
 
 
 class ImportSourcePlugin(BeetsPlugin):
@@ -20,11 +20,7 @@ class ImportSourcePlugin(BeetsPlugin):
     def __init__(self):
         """Initialize the plugin and read configuration."""
         super().__init__()
-        self.config.add(
-            {
-                "suggest_removal": False,
-            }
-        )
+        self.config.add({"suggest_removal": False})
         self.import_stages = [self.import_stage]
         self.register_listener("item_removed", self.suggest_removal)
         # In order to stop future removal suggestions for an album we keep
@@ -94,8 +90,8 @@ class ImportSourcePlugin(BeetsPlugin):
 
         # We ask the user whether they'd like to delete the item's source
         # directory
-        item_path = colorize_text("text_warning", item.filepath)
-        source_path = colorize_text("text_warning", srcpath)
+        item_path = colorize("text_warning", item.filepath)
+        source_path = colorize("text_warning", srcpath)
 
         print(
             f"The item:\n{item_path}\nis originated from:\n{source_path}\n"
@@ -114,10 +110,7 @@ class ImportSourcePlugin(BeetsPlugin):
 
         # Handle user response
         if resp == "d":
-            self._log.info(
-                "Deleting the item's source file: {}",
-                srcpath,
-            )
+            self._log.info("Deleting the item's source file: {}", srcpath)
             srcpath.unlink()
 
         elif resp == "r":
@@ -136,7 +129,7 @@ class ImportSourcePlugin(BeetsPlugin):
 
             print("Doing so will delete the following items' sources as well:")
             for searched_item in item._db.items(source_dir_query):
-                print(colorize_text("text_warning", searched_item.filepath))
+                print(colorize("text_warning", searched_item.filepath))
 
             print("Would you like to continue?")
             continue_resp = input_options(
@@ -146,8 +139,7 @@ class ImportSourcePlugin(BeetsPlugin):
 
             if continue_resp == "y":
                 self._log.info(
-                    "Deleting the item's source directory: {}",
-                    srcpath.parent,
+                    "Deleting the item's source directory: {}", srcpath.parent
                 )
                 rmtree(srcpath.parent)
 
@@ -157,8 +149,7 @@ class ImportSourcePlugin(BeetsPlugin):
 
             elif continue_resp == "f":
                 self._log.info(
-                    "removing just the item's original source: {}",
-                    srcpath,
+                    "removing just the item's original source: {}", srcpath
                 )
                 srcpath.unlink()
 

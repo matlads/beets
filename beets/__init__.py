@@ -19,16 +19,14 @@ import confuse
 
 from .util.deprecation import deprecate_imports
 
-__version__ = "2.6.1"
+__version__ = "2.11.0"
 __author__ = "Adrian Sampson <adrian@radbox.org>"
 
 
 def __getattr__(name: str):
     """Handle deprecated imports."""
     return deprecate_imports(
-        __name__,
-        {"art": "beetsplug._utils", "vfs": "beetsplug._utils"},
-        name,
+        __name__, {"art": "beetsplug._utils", "vfs": "beetsplug._utils"}, name
     )
 
 
@@ -37,11 +35,11 @@ class IncludeLazyConfig(confuse.LazyConfig):
     YAML files specified in an `include` setting.
     """
 
-    def read(self, user=True, defaults=True):
+    def read(self, user: bool = True, defaults: bool = True) -> None:
         super().read(user, defaults)
 
         try:
-            for view in self["include"]:
+            for view in self["include"].sequence():
                 self.set_file(view.as_filename())
         except confuse.NotFoundError:
             pass

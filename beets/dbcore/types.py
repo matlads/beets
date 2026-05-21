@@ -26,10 +26,11 @@ import beets
 from beets import util
 from beets.util.units import human_seconds_short, raw_seconds_short
 
-from . import query
+from . import pathutils, query
 
 SQLiteType = query.SQLiteType
 BLOB_TYPE = query.BLOB_TYPE
+MULTI_VALUE_DELIMITER = "\\␀"
 
 
 class ModelType(typing.Protocol):
@@ -66,6 +67,8 @@ class Type(ABC, Generic[T, N]):
     """The `Query` subclass to be used when querying the field.
     """
 
+    # For sequence-like types, keep ``model_type`` unsubscripted as it's used
+    # for ``isinstance`` checks. Use ``list`` instead of ``list[str]``
     model_type: type[T]
     """The Python type that is used to represent the value in the model.
 
@@ -201,14 +204,6 @@ class PaddedInt(BasePaddedInt[int]):
     pass
 
 
-class NullPaddedInt(BasePaddedInt[None]):
-    """Same as `PaddedInt`, but does not normalize `None` to `0`."""
-
-    @property
-    def null(self) -> None:
-        return None
-
-
 class ScaledInt(Integer):
     """An integer whose formatting operation scales the number by a
     constant and adds a suffix. Good for units with large magnitudes.
@@ -287,26 +282,59 @@ class String(BaseString[str, Any]):
     model_type = str
 
 
-class DelimitedString(BaseString[list[str], list[str]]):
-    """A list of Unicode strings, represented in-database by a single string
+class DelimitedString(BaseString[list, list]):  # type: ignore[type-arg]
+    r"""A list of Unicode strings, represented in-database by a single string
     containing delimiter-separated values.
+
+    In template evaluation the list is formatted by joining the values with
+    a fixed '; ' delimiter regardless of the database delimiter. That is because
+    the '\␀' character used for multi-value fields is mishandled on Windows
+    as it contains a backslash character.
     """
 
-    model_type = list[str]
+    model_type = list
+    fmt_delimiter = "; "
 
-    def __init__(self, delimiter: str):
-        self.delimiter = delimiter
+    def __init__(self, db_delimiter: str):
+        self.db_delimiter = db_delimiter
 
     def format(self, value: list[str]):
-        return self.delimiter.join(value)
+        return self.fmt_delimiter.join(value)
 
     def parse(self, string: str):
         if not string:
             return []
-        return string.split(self.delimiter)
+
+        delimiter = (
+            self.db_delimiter
+            if self.db_delimiter in string
+            else self.fmt_delimiter
+        )
+        return string.split(delimiter)
+
+    def normalize(self, value: Any) -> list[str]:
+        """
+        For multi-valued tags present in externally-tagged media, we may receive
+        delimiter-separated values that have not been split, rather than
+        assuming that Python-originated values are already split into their
+        constituent values. For example, externally-tagged media files may have
+        multi-valued genre tags, which we need to treat as separate list items
+        here.
+        """
+        if value is None:
+            return self.null
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                if isinstance(item, str) and self.fmt_delimiter in item:
+                    result.extend(item.split(self.fmt_delimiter))
+                else:
+                    result.append(item)
+            return result
+        return self.model_type(value)
 
     def to_sql(self, model_value: list[str]):
-        return self.delimiter.join(model_value)
+        return self.db_delimiter.join(model_value)
 
 
 class Boolean(Type):
@@ -374,11 +402,13 @@ class BasePathType(Type[bytes, N]):
             return value
 
     def from_sql(self, sql_value):
-        return self.normalize(sql_value)
+        return pathutils.expand_path_from_db(self.normalize(sql_value))
 
-    def to_sql(self, value: bytes) -> BLOB_TYPE:
+    def to_sql(self, value: pathutils.MaybeBytes) -> BLOB_TYPE | None:
+        value = pathutils.normalize_path_for_db(value)
         if isinstance(value, bytes):
-            value = BLOB_TYPE(value)
+            return BLOB_TYPE(value)
+
         return value
 
 
@@ -464,7 +494,7 @@ NULL_FLOAT = NullFloat()
 STRING = String()
 BOOLEAN = Boolean()
 DATE = DateType()
-SEMICOLON_SPACE_DSV = DelimitedString(delimiter="; ")
+SEMICOLON_SPACE_DSV = DelimitedString("; ")
 
 # Will set the proper null char in mediafile
-MULTI_VALUE_DSV = DelimitedString(delimiter="\\␀")
+MULTI_VALUE_DSV = DelimitedString(MULTI_VALUE_DELIMITER)

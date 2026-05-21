@@ -2,13 +2,13 @@ import re
 
 import pytest
 
-from beets.autotag import AlbumInfo, TrackInfo
 from beets.autotag.distance import (
     Distance,
     distance,
     string_dist,
     track_distance,
 )
+from beets.autotag.hooks import AlbumInfo, TrackInfo
 from beets.library import Item
 from beets.metadata_plugins import MetadataSourcePlugin, get_penalty
 from beets.plugins import BeetsPlugin
@@ -123,6 +123,12 @@ class TestDistance:
         dist.add("album", 0.375)
         dist.add("medium", 0.75)
         assert dist.items() == [("album", 0.25), ("medium", 0.25)]
+
+    def test_generic_penalty_keys_excludes_zero_penalties(self, dist):
+        dist.add("album", 0.5)
+        dist.add("label", 0.0)
+        dist.add("medium", 0.25)
+        assert dist.generic_penalty_keys == ["album", "medium"]
 
     def test_update(self, dist):
         dist1 = dist

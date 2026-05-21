@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import platformdirs
 
 import beets
-from beets import dbcore
+from beets import context, dbcore
+from beets.dbcore.sort import NullSort
 from beets.util import normpath
 
+from . import migrations
 from .models import Album, Item
 from .queries import PF_KEY_DEFAULT, parse_query_parts, parse_query_string
 
@@ -19,6 +22,15 @@ class Library(dbcore.Database):
     """A database of music containing songs and albums."""
 
     _models = (Item, Album)
+    _migrations = (
+        (migrations.MultiGenreFieldMigration, (Item, Album)),
+        (migrations.LyricsMetadataInFlexFieldsMigration, (Item,)),
+        (migrations.MultiRemixerFieldMigration, (Item,)),
+        (migrations.MultiLyricistFieldMigration, (Item,)),
+        (migrations.MultiComposerFieldMigration, (Item,)),
+        (migrations.MultiArrangerFieldMigration, (Item,)),
+        (migrations.RelativePathMigration, (Item, Album)),
+    )
 
     def __init__(
         self,
@@ -26,17 +38,26 @@ class Library(dbcore.Database):
         directory: str | None = None,
         path_formats=((PF_KEY_DEFAULT, "$artist/$album/$track $title"),),
         replacements=None,
+        set_music_dir: bool = True,
     ):
         timeout = beets.config["timeout"].as_number()
-        super().__init__(path, timeout=timeout)
-
         self.directory = normpath(directory or platformdirs.user_music_path())
+        if set_music_dir:
+            context.set_music_dir(self.directory)
+
+        super().__init__(path, timeout=timeout)
 
         self.path_formats = path_formats
         self.replacements = replacements
 
         # Used for template substitution performance.
         self._memotable: dict[tuple[str, ...], str] = {}
+
+    @contextmanager
+    def music_dir_context(self):
+        """Temporarily bind this library's directory to path conversion."""
+        with context.music_dir(self.directory):
+            yield self
 
     # Adding objects to the database.
 
@@ -88,16 +109,19 @@ class Library(dbcore.Database):
         # Parse the query, if necessary.
         try:
             parsed_sort = None
-            if isinstance(query, str):
-                query, parsed_sort = parse_query_string(query, model_cls)
-            elif isinstance(query, (list, tuple)):
-                query, parsed_sort = parse_query_parts(query, model_cls)
+            # Query parsing needs the library root, but keeping it scoped here
+            # avoids leaking one Library's directory into another's work.
+            with context.music_dir(self.directory):
+                if isinstance(query, str):
+                    query, parsed_sort = parse_query_string(query, model_cls)
+                elif isinstance(query, (list, tuple)):
+                    query, parsed_sort = parse_query_parts(query, model_cls)
         except dbcore.query.InvalidQueryArgumentValueError as exc:
             raise dbcore.InvalidQueryError(query, exc)
 
         # Any non-null sort specified by the parsed query overrides the
         # provided sort.
-        if parsed_sort and not isinstance(parsed_sort, dbcore.query.NullSort):
+        if parsed_sort and not isinstance(parsed_sort, NullSort):
             sort = parsed_sort
 
         return super()._fetch(model_cls, query, sort)

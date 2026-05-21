@@ -16,16 +16,16 @@
 """This plugin generates tab completions for Beets commands for the Fish shell
 <https://fishshell.com/>, including completions for Beets commands, plugin
 commands, and option flags. Also generated are completions for all the album
-and track fields, suggesting for example `genre:` or `album:` when querying the
+and track fields, suggesting for example `genres:` or `album:` when querying the
 Beets database. Completions for the *values* of those fields are not generated
 by default but can be added via the `-e` / `--extravalues` flag. For example:
-`beet fish -e genre -e albumartist`
+`beet fish -e genres -e albumartist`
 """
 
 import os
 from operator import attrgetter
 
-from beets import library, ui
+from beets import library, plugins, ui
 from beets.plugins import BeetsPlugin
 from beets.ui import commands
 
@@ -111,7 +111,7 @@ class FishPlugin(BeetsPlugin):
         nobasicfields = opts.noFields  # Do not complete for album/track fields
         extravalues = opts.extravalues  # e.g., Also complete artists names
         beetcmds = sorted(
-            (commands.default_commands + commands.plugins.commands()),
+            (commands.default_commands + plugins.commands()),
             key=attrgetter("name"),
         )
         fields = sorted(set(library.Album.all_keys() + library.Item.all_keys()))
@@ -214,9 +214,7 @@ def get_subcommands(cmd_name_and_help, nobasicfields, extravalues):
 
         if nobasicfields is False:
             word += BL_USE3.format(
-                cmdname,
-                f"-a {wrap('$FIELDS')}",
-                f"-d {wrap('fieldname')}",
+                cmdname, f"-a {wrap('$FIELDS')}", f"-d {wrap('fieldname')}"
             )
 
         if extravalues:
@@ -224,9 +222,7 @@ def get_subcommands(cmd_name_and_help, nobasicfields, extravalues):
                 setvar = wrap(f"${f.upper()}S")
                 word += " ".join(
                     BL_EXTRA3.format(
-                        f"{cmdname} {f}:",
-                        f"-f -A -a {setvar}",
-                        f"-d {wrap(f)}",
+                        f"{cmdname} {f}:", f"-f -A -a {setvar}", f"-d {wrap(f)}"
                     ).split()
                 )
                 word += "\n"
@@ -277,9 +273,7 @@ def get_all_commands(beetcmds):
                 word += "\n"
 
             word = word + BL_USE3.format(
-                name,
-                "-s h -l help",
-                f"-d {wrap('print help')}",
+                name, "-s h -l help", f"-d {wrap('print help')}"
             )
     return word
 

@@ -25,9 +25,10 @@ import pytest
 from confuse import ConfigError
 
 from beets import config, plugins, ui
+from beets.exceptions import UserError
 from beets.test import _common
 from beets.test.helper import BeetsTestCase, IOMixin, PluginTestCase
-from beets.ui import commands
+from beets.ui import _open_library, commands
 from beets.util import syspath
 
 
@@ -66,16 +67,29 @@ class PrintTest(IOMixin, unittest.TestCase):
                 del os.environ["LC_CTYPE"]
 
 
-@_common.slow_test()
+class ShowModelChangesTest(IOMixin, BeetsTestCase):
+    def test_uses_database_state_when_old_not_provided(self):
+        item = self.add_item_fixture(title="old title")
+        old_label = format(item.get_fresh_from_db())
+
+        item.title = "new title"
+
+        assert ui.show_model_changes(item) is True
+        assert self.io.getoutput().splitlines() == [
+            old_label,
+            "  title: old title -> new title",
+        ]
+
+
 class TestPluginTestCase(PluginTestCase):
     plugin = "test"
 
     def setUp(self):
+        self.config["pluginpath"] = [_common.PLUGINPATH]
         super().setUp()
-        config["pluginpath"] = [_common.PLUGINPATH]
 
 
-class ConfigTest(TestPluginTestCase):
+class ConfigTest(IOMixin, TestPluginTestCase):
     def setUp(self):
         super().setUp()
 
@@ -112,6 +126,12 @@ class ConfigTest(TestPluginTestCase):
 
         self._reset_config()
 
+    def run_command(self, *args, **kwargs):
+        # We need to reload the lib based on the
+        # current config
+        self.lib = _open_library(self.config)
+        super().run_command(*args, **kwargs)
+
     def tearDown(self):
         self.env_patcher.stop()
         commands.default_commands.pop()
@@ -141,7 +161,7 @@ class ConfigTest(TestPluginTestCase):
         with self.write_config_file() as config:
             config.write("paths: {x: y}")
 
-        self.run_command("test", lib=None)
+        self.run_command("test")
         key, template = self.test_cmd.lib.path_formats[0]
         assert key == "x"
         assert template.original == "y"
@@ -152,7 +172,7 @@ class ConfigTest(TestPluginTestCase):
         self._reset_config()
         with self.write_config_file() as config:
             config.write("paths: {x: y}")
-        self.run_command("test", lib=None)
+        self.run_command("test")
         key, template = self.test_cmd.lib.path_formats[0]
         assert key == "x"
         assert template.original == "y"
@@ -162,21 +182,22 @@ class ConfigTest(TestPluginTestCase):
         with self.write_config_file() as config:
             config.write("library: /xxx/yyy/not/a/real/path")
 
-        with pytest.raises(ui.UserError):
-            self.run_command("test", lib=None)
+        self.io.addinput("n")
+        with pytest.raises(UserError):
+            self.run_command("test")
 
     def test_user_config_file(self):
         with self.write_config_file() as file:
             file.write("anoption: value")
 
-        self.run_command("test", lib=None)
+        self.run_command("test")
         assert config["anoption"].get() == "value"
 
     def test_replacements_parsed(self):
         with self.write_config_file() as config:
             config.write("replace: {'[xy]': z}")
 
-        self.run_command("test", lib=None)
+        self.run_command("test")
         replacements = self.test_cmd.lib.replacements
         repls = [(p.pattern, s) for p, s in replacements]  # Compare patterns.
         assert repls == [("[xy]", "z")]
@@ -184,7 +205,7 @@ class ConfigTest(TestPluginTestCase):
     def test_multiple_replacements_parsed(self):
         with self.write_config_file() as config:
             config.write("replace: {'[xy]': z, foo: bar}")
-        self.run_command("test", lib=None)
+        self.run_command("test")
         replacements = self.test_cmd.lib.replacements
         repls = [(p.pattern, s) for p, s in replacements]
         assert repls == [("[xy]", "z"), ("foo", "bar")]
@@ -192,7 +213,7 @@ class ConfigTest(TestPluginTestCase):
     def test_cli_config_option(self):
         with open(self.cli_config_path, "w") as file:
             file.write("anoption: value")
-        self.run_command("--config", self.cli_config_path, "test", lib=None)
+        self.run_command("--config", self.cli_config_path, "test")
         assert config["anoption"].get() == "value"
 
     def test_cli_config_file_overwrites_user_defaults(self):
@@ -201,7 +222,7 @@ class ConfigTest(TestPluginTestCase):
 
         with open(self.cli_config_path, "w") as file:
             file.write("anoption: cli overwrite")
-        self.run_command("--config", self.cli_config_path, "test", lib=None)
+        self.run_command("--config", self.cli_config_path, "test")
         assert config["anoption"].get() == "cli overwrite"
 
     def test_cli_config_file_overwrites_beetsdir_defaults(self):
@@ -211,7 +232,7 @@ class ConfigTest(TestPluginTestCase):
 
         with open(self.cli_config_path, "w") as file:
             file.write("anoption: cli overwrite")
-        self.run_command("--config", self.cli_config_path, "test", lib=None)
+        self.run_command("--config", self.cli_config_path, "test")
         assert config["anoption"].get() == "cli overwrite"
 
     #    @unittest.skip('Difficult to implement with optparse')
@@ -226,7 +247,7 @@ class ConfigTest(TestPluginTestCase):
     #            file.write('second: value')
     #
     #        self.run_command('--config', cli_config_path_1,
-    #                      '--config', cli_config_path_2, 'test', lib=None)
+    #                      '--config', cli_config_path_2, 'test')
     #        assert config['first'].get() == 'value'
     #        assert config['second'].get() == 'value'
     #
@@ -252,7 +273,7 @@ class ConfigTest(TestPluginTestCase):
             file.write("library: beets.db\n")
             file.write("statefile: state")
 
-        self.run_command("--config", self.cli_config_path, "test", lib=None)
+        self.run_command("--config", self.cli_config_path, "test")
         assert config["library"].as_path() == self.user_config_dir / "beets.db"
         assert config["statefile"].as_path() == self.user_config_dir / "state"
 
@@ -263,14 +284,14 @@ class ConfigTest(TestPluginTestCase):
             file.write("library: beets.db\n")
             file.write("statefile: state")
 
-        self.run_command("--config", self.cli_config_path, "test", lib=None)
+        self.run_command("--config", self.cli_config_path, "test")
         assert config["library"].as_path() == self.beetsdir / "beets.db"
         assert config["statefile"].as_path() == self.beetsdir / "state"
 
     def test_command_line_option_relative_to_working_dir(self):
         config.read()
         os.chdir(syspath(self.temp_dir))
-        self.run_command("--library", "foo.db", "test", lib=None)
+        self.run_command("--library", "foo.db", "test")
         assert config["library"].as_path() == Path.cwd() / "foo.db"
 
     def test_cli_config_file_loads_plugin_commands(self):
@@ -278,7 +299,7 @@ class ConfigTest(TestPluginTestCase):
             file.write(f"pluginpath: {_common.PLUGINPATH}\n")
             file.write("plugins: test")
 
-        self.run_command("--config", self.cli_config_path, "plugin", lib=None)
+        self.run_command("--config", self.cli_config_path, "plugin")
         plugs = plugins.find_plugins()
         assert len(plugs) == 1
         assert plugs[0].is_test_plugin
@@ -328,57 +349,6 @@ class ConfigTest(TestPluginTestCase):
         assert config["statefile"].as_path() == self.beetsdir / "state"
 
 
-class ShowModelChangeTest(IOMixin, unittest.TestCase):
-    def setUp(self):
-        super().setUp()
-        self.a = _common.item()
-        self.b = _common.item()
-        self.a.path = self.b.path
-
-    def _show(self, **kwargs):
-        change = ui.show_model_changes(self.a, self.b, **kwargs)
-        out = self.io.getoutput()
-        return change, out
-
-    def test_identical(self):
-        change, out = self._show()
-        assert not change
-        assert out == ""
-
-    def test_string_fixed_field_change(self):
-        self.b.title = "x"
-        change, out = self._show()
-        assert change
-        assert "title" in out
-
-    def test_int_fixed_field_change(self):
-        self.b.track = 9
-        change, out = self._show()
-        assert change
-        assert "track" in out
-
-    def test_floats_close_to_identical(self):
-        self.a.length = 1.00001
-        self.b.length = 1.00005
-        change, out = self._show()
-        assert not change
-        assert out == ""
-
-    def test_floats_different(self):
-        self.a.length = 1.00001
-        self.b.length = 2.00001
-        change, out = self._show()
-        assert change
-        assert "length" in out
-
-    def test_both_values_shown(self):
-        self.a.title = "foo"
-        self.b.title = "bar"
-        _, out = self._show()
-        assert "foo" in out
-        assert "bar" in out
-
-
 class PathFormatTest(unittest.TestCase):
     def test_custom_paths_prepend(self):
         default_formats = ui.get_path_formats()
@@ -391,13 +361,12 @@ class PathFormatTest(unittest.TestCase):
         assert pf[1:] == default_formats
 
 
-@_common.slow_test()
 class PluginTest(TestPluginTestCase):
     def test_plugin_command_from_pluginpath(self):
-        self.run_command("test", lib=None)
+        self.run_command("test")
 
 
-class CommonOptionsParserCliTest(BeetsTestCase):
+class CommonOptionsParserCliTest(IOMixin, BeetsTestCase):
     """Test CommonOptionsParser and formatting LibModel formatting on 'list'
     command.
     """
@@ -418,10 +387,10 @@ class CommonOptionsParserCliTest(BeetsTestCase):
 
     def test_path_option(self):
         output = self.run_with_output("ls", "-p")
-        assert output == "xxx/yyy\n"
+        assert output == f"{self.lib_path / 'xxx/yyy'}\n"
 
         output = self.run_with_output("ls", "-a", "-p")
-        assert output == "xxx\n"
+        assert output == f"{self.lib_path / 'xxx'}\n"
 
     def test_format_option(self):
         output = self.run_with_output("ls", "-f", "$artist")
@@ -449,10 +418,15 @@ class CommonOptionsParserCliTest(BeetsTestCase):
         output = self.run_with_output("help")
         assert "Usage:" in output
 
+        # command description is on the same line
+        assert (
+            "config            show or edit the user configuration" in output
+        ), "unexpected command description formatting"
+
         output = self.run_with_output("help", "list")
         assert "Usage:" in output
 
-        with pytest.raises(ui.UserError):
+        with pytest.raises(UserError):
             self.run_command("help", "this.is.not.a.real.command")
 
     def test_stats(self):

@@ -3,21 +3,18 @@
 from mediafile import MediaFile
 
 from beets.library import Item
-from beets.test.helper import PluginTestCase, control_stdin
+from beets.test.helper import IOMixin, PluginTestCase
 from beets.util import syspath
 from beetsplug.zero import ZeroPlugin
 
 
-class ZeroPluginTest(PluginTestCase):
+class ZeroPluginTest(IOMixin, PluginTestCase):
     plugin = "zero"
     preload_plugin = False
 
     def test_no_patterns(self):
         item = self.add_item_fixture(
-            comments="test comment",
-            title="Title",
-            month=1,
-            year=2000,
+            comments="test comment", title="Title", month=1, year=2000
         )
         item.write()
 
@@ -102,12 +99,10 @@ class ZeroPluginTest(PluginTestCase):
         item.write()
         item_id = item.id
 
-        with (
-            self.configure_plugin(
-                {"fields": ["comments"], "update_database": True, "auto": False}
-            ),
-            control_stdin("y"),
+        with self.configure_plugin(
+            {"fields": ["comments"], "update_database": True, "auto": False}
         ):
+            self.io.addinput("y")
             self.run_command("zero")
 
         mf = MediaFile(syspath(item.path))
@@ -125,16 +120,10 @@ class ZeroPluginTest(PluginTestCase):
         item.write()
         item_id = item.id
 
-        with (
-            self.configure_plugin(
-                {
-                    "fields": ["comments"],
-                    "update_database": False,
-                    "auto": False,
-                }
-            ),
-            control_stdin("y"),
+        with self.configure_plugin(
+            {"fields": ["comments"], "update_database": False, "auto": False}
         ):
+            self.io.addinput("y")
             self.run_command("zero")
 
         mf = MediaFile(syspath(item.path))
@@ -187,7 +176,8 @@ class ZeroPluginTest(PluginTestCase):
 
         item_id = item.id
 
-        with self.configure_plugin({"fields": []}), control_stdin("y"):
+        with self.configure_plugin({"fields": []}):
+            self.io.addinput("y")
             self.run_command("zero")
 
         item = self.lib.get_item(item_id)
@@ -203,12 +193,10 @@ class ZeroPluginTest(PluginTestCase):
 
         item_id = item.id
 
-        with (
-            self.configure_plugin(
-                {"fields": ["year"], "keep_fields": ["comments"]}
-            ),
-            control_stdin("y"),
+        with self.configure_plugin(
+            {"fields": ["year"], "keep_fields": ["comments"]}
         ):
+            self.io.addinput("y")
             self.run_command("zero")
 
         item = self.lib.get_item(item_id)
@@ -218,10 +206,7 @@ class ZeroPluginTest(PluginTestCase):
 
     def test_keep_fields(self):
         item = self.add_item_fixture(year=2016, comments="test comment")
-        tags = {
-            "comments": "test comment",
-            "year": 2016,
-        }
+        tags = {"comments": "test comment", "year": 2016}
 
         with self.configure_plugin(
             {"fields": None, "keep_fields": ["year"], "update_database": True}
@@ -261,7 +246,8 @@ class ZeroPluginTest(PluginTestCase):
 
         mf = MediaFile(syspath(item.path))
         assert mf.comments is None
-        assert mf.disc == 0
+        assert mf.disc is None
+        assert mf.disctotal is None
 
     def test_omit_single_disc_with_tags_multi(self):
         item = self.add_item_fixture(
@@ -276,6 +262,7 @@ class ZeroPluginTest(PluginTestCase):
         mf = MediaFile(syspath(item.path))
         assert mf.comments is None
         assert mf.disc == 1
+        assert mf.disctotal == 4
 
     def test_omit_single_disc_only_change_single(self):
         item = self.add_item_fixture(disctotal=1, disc=1)
@@ -285,7 +272,8 @@ class ZeroPluginTest(PluginTestCase):
             item.write()
 
         mf = MediaFile(syspath(item.path))
-        assert mf.disc == 0
+        assert mf.disc is None
+        assert mf.disctotal is None
 
     def test_omit_single_disc_only_change_multi(self):
         item = self.add_item_fixture(disctotal=4, disc=1)
@@ -296,6 +284,7 @@ class ZeroPluginTest(PluginTestCase):
 
         mf = MediaFile(syspath(item.path))
         assert mf.disc == 1
+        assert mf.disctotal == 4
 
     def test_empty_query_n_response_no_changes(self):
         item = self.add_item_fixture(
@@ -303,12 +292,10 @@ class ZeroPluginTest(PluginTestCase):
         )
         item.write()
         item_id = item.id
-        with (
-            self.configure_plugin(
-                {"fields": ["comments"], "update_database": True, "auto": False}
-            ),
-            control_stdin("n"),
+        with self.configure_plugin(
+            {"fields": ["comments"], "update_database": True, "auto": False}
         ):
+            self.io.addinput("n")
             self.run_command("zero")
 
         mf = MediaFile(syspath(item.path))
@@ -318,3 +305,15 @@ class ZeroPluginTest(PluginTestCase):
         assert mf.year == 2016
         assert mf.comments == "test comment"
         assert item["comments"] == "test comment"
+
+    def test_keep_fields_images_preserves_art(self):
+        path = self.create_mediafile_fixture(images=["jpg"])
+        item = Item.from_path(path)
+
+        with self.configure_plugin({"fields": None, "keep_fields": ["images"]}):
+            item.write()
+
+        mf = MediaFile(syspath(path))
+        assert mf.images, (
+            "images should be preserved when 'images' is in keep_fields"
+        )

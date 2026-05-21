@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import errno
 import fnmatch
 import os
@@ -57,7 +58,6 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from beets.library import Item
-
 
 MAX_FILENAME_LENGTH = 200
 WINDOWS_MAGIC_PREFIX = "\\\\?\\"
@@ -609,10 +609,7 @@ def hardlink(path: bytes, dest: bytes, replace: bool = False):
 
 
 def reflink(
-    path: bytes,
-    dest: bytes,
-    replace: bool = False,
-    fallback: bool = False,
+    path: bytes, dest: bytes, replace: bool = False, fallback: bool = False
 ):
     """Create a reflink from `dest` to `path`.
 
@@ -934,7 +931,8 @@ def open_anything() -> str:
     if sys_name == "Darwin":
         base_cmd = "open"
     elif sys_name == "Windows":
-        base_cmd = "start"
+        # `start` is a cmd.exe builtin, so invoke it through the shell.
+        base_cmd = 'cmd /c start ""'
     else:  # Assume Unix
         base_cmd = "xdg-open"
     return base_cmd
@@ -1047,17 +1045,21 @@ def asciify_path(path: str, sep_replace: str) -> str:
 
 
 def par_map(transform: Callable[[T], Any], items: Sequence[T]) -> None:
-    """Apply the function `transform` to all the elements in the
-    iterable `items`, like `map(transform, items)` but with no return
-    value.
+    """Apply a transformation to each item concurrently using a thread pool.
 
-    The parallelism uses threads (not processes), so this is only useful
-    for IO-bound `transform`s.
+    Propagates the calling thread's context variables into each worker,
+    ensuring that context-dependent state is available during parallel
+    execution.
     """
-    pool = ThreadPool()
-    pool.map(transform, items)
-    pool.close()
-    pool.join()
+    ctx = contextvars.copy_context()  # snapshot parent context at call time
+
+    def _worker(item: T) -> Any:
+        # ThreadPool workers may run concurrently, so each task needs its own
+        # child context rather than sharing one Context instance.
+        return ctx.copy().run(transform, item)
+
+    with ThreadPool() as pool:
+        pool.map(_worker, items)
 
 
 class cached_classproperty(Generic[T]):
@@ -1199,3 +1201,9 @@ def get_temp_filename(
 def unique_list(elements: Iterable[T]) -> list[T]:
     """Return a list with unique elements in the original order."""
     return list(dict.fromkeys(elements))
+
+
+def chunks(lst: Sequence[T], n: int) -> Iterator[list[T]]:
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield list(lst[i : i + n])

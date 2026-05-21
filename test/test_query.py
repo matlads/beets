@@ -14,12 +14,15 @@
 
 """Various tests for querying the library database."""
 
+import logging
+import os
 import sys
 from functools import partial
 from pathlib import Path
 
 import pytest
 
+from beets import util
 from beets.dbcore import types
 from beets.dbcore.query import (
     AndQuery,
@@ -71,7 +74,8 @@ class TestGet:
                 album="baz",
                 year=2001,
                 comp=True,
-                genre="rock",
+                genres=["rock"],
+                composers=["composer"],
             ),
             helper.create_item(
                 title="second",
@@ -80,7 +84,7 @@ class TestGet:
                 album="baz",
                 year=2002,
                 comp=True,
-                genre="Rock",
+                genres=["Rock"],
             ),
         ]
         album = helper.lib.add_album(album_items)
@@ -94,7 +98,7 @@ class TestGet:
             album="foo",
             year=2003,
             comp=False,
-            genre="Hard Rock",
+            genres=["Hard Rock"],
             comments="caf\xe9",
         )
 
@@ -125,12 +129,12 @@ class TestGet:
             ("comments:caf\xe9", ["third"]),
             ("comp:true", ["first", "second"]),
             ("comp:false", ["third"]),
-            ("genre:=rock", ["first"]),
-            ("genre:=Rock", ["second"]),
-            ('genre:="Hard Rock"', ["third"]),
-            ('genre:=~"hard rock"', ["third"]),
-            ("genre:=~rock", ["first", "second"]),
-            ('genre:="hard rock"', []),
+            ("genres:=rock", ["first"]),
+            ("genres:=Rock", ["second"]),
+            ('genres:="Hard Rock"', ["third"]),
+            ('genres:=~"hard rock"', ["third"]),
+            ("genres:=~rock", ["first", "second"]),
+            ('genres:="hard rock"', []),
             ("popebear", []),
             ("pope:bear", []),
             ("singleton:true", ["third"]),
@@ -239,6 +243,31 @@ class TestGet:
             map(dict, lib.items(q_slow))
         )
 
+    @pytest.mark.parametrize(
+        "q, legacy_field",
+        [
+            pytest.param("genres::rock", None, id="non-legacy-genres-field"),
+            pytest.param("genre::rock", "genre", id="legacy-genre-field"),
+            pytest.param(
+                "composers::composer", None, id="non-legacy-composer-field"
+            ),
+            pytest.param(
+                "composer::composer", "composer", id="legacy-composer-field"
+            ),
+        ],
+    )
+    def test_legacy_field(self, caplog, lib, q, legacy_field):
+        with caplog.at_level(logging.WARNING, logger="beets"):
+            actual_titles = {i.title for i in lib.items(q)}
+
+        assert actual_titles == {"first"}
+        if legacy_field:
+            assert caplog.records, "No log records were captured"
+            assert len(caplog.records) == 1
+            message = str(caplog.records[0].msg)
+            assert f"The '{legacy_field}' field is deprecated" in message
+            assert f"Use '{legacy_field}s' instead." in message
+
 
 class TestMatch:
     @pytest.fixture(scope="class")
@@ -246,9 +275,9 @@ class TestMatch:
         return _common.item(
             album="the album",
             disc=6,
-            genre="the genre",
             year=1,
             bitrate=128000,
+            genres=["Classical", "Baroque"],
         )
 
     @pytest.mark.parametrize(
@@ -260,9 +289,13 @@ class TestMatch:
             (SubstringQuery("album", "album"), True),
             (SubstringQuery("album", "ablum"), False),
             (SubstringQuery("disc", "6"), True),
-            (StringQuery("genre", "the genre"), True),
-            (StringQuery("genre", "THE GENRE"), True),
-            (StringQuery("genre", "genre"), False),
+            (StringQuery("album", "the album"), True),
+            (StringQuery("album", "THE ALBUM"), True),
+            (StringQuery("album", "album"), False),
+            (MatchQuery("genres", "Classical"), True),
+            (MatchQuery("genres", "Neoclassical"), False),
+            (StringQuery("genres", "classical"), True),
+            (StringQuery("genres", "neoclassical"), False),
             (NumericQuery("year", "1"), True),
             (NumericQuery("year", "10"), False),
             (NumericQuery("bitrate", "100000..200000"), True),
@@ -283,6 +316,23 @@ class TestPathQuery:
     and path separator detection across different platforms.
     """
 
+    @staticmethod
+    def abs_query_path(path: str, trailing_sep: bool = False) -> str:
+        """Build a platform-correct absolute query path without normalizing it.
+
+        On Windows, leading-slash paths are drive-rooted but Python 3.13 no
+        longer treats them as absolute. Prefix the current drive so explicit
+        path queries stay absolute while preserving raw segments such as ``..``.
+        """
+        if os.path.__name__ == "ntpath" and path.startswith("/"):
+            drive, _ = os.path.splitdrive(os.fsdecode(util.normpath(os.sep)))
+            path = drive + path
+
+        path = path.replace("/", os.sep)
+        if trailing_sep:
+            path = os.path.join(path, "")
+        return path.replace("\\", "\\\\")
+
     @pytest.fixture(scope="class")
     def lib(self, helper):
         helper.add_item(path=b"/aaa/bb/c.mp3", title="path item")
@@ -295,26 +345,53 @@ class TestPathQuery:
         return helper.lib
 
     @pytest.mark.parametrize(
-        "q, expected_titles",
+        "path, expected_titles, trailing_sep",
         [
-            _p("path:/aaa/bb/c.mp3", ["path item"], id="exact-match"),
-            _p("path:/aaa", ["path item"], id="parent-dir-no-slash"),
-            _p("path:/aaa/", ["path item"], id="parent-dir-with-slash"),
-            _p("path:/aa", [], id="no-match-does-not-match-parent-dir"),
-            _p("path:/xyzzy/", [], id="no-match"),
-            _p("path:/b/", [], id="fragment-no-match"),
-            _p("path:/x/../aaa/bb", ["path item"], id="non-normalized"),
-            _p("path::c\\.mp3$", ["path item"], id="regex"),
-            _p("path:/c/_", ["with underscore"], id="underscore-escaped"),
-            _p("path:/c/%", ["with percent"], id="percent-escaped"),
-            _p("path:/c/\\\\x", ["with backslash"], id="backslash-escaped"),
+            _p("/aaa/bb/c.mp3", ["path item"], False, id="exact-match"),
+            _p("/aaa", ["path item"], False, id="parent-dir-no-slash"),
+            _p("/aaa", ["path item"], True, id="parent-dir-with-slash"),
+            _p("/aa", [], False, id="no-match-does-not-match-parent-dir"),
+            _p("/xyzzy", [], True, id="no-match"),
+            _p("/b", [], True, id="fragment-no-match"),
+            _p("/x/../aaa/bb", ["path item"], False, id="non-normalized"),
+            _p(r"c\.mp3$", ["path item"], False, id="regex"),
+            _p("/c/_", ["with underscore"], False, id="underscore-escaped"),
+            _p("/c/%", ["with percent"], False, id="percent-escaped"),
+            _p(r"/c/\x", ["with backslash"], False, id="backslash-escaped"),
         ],
     )
-    def test_explicit(self, monkeypatch, lib, q, expected_titles):
+    def test_explicit(
+        self, monkeypatch, lib, path, expected_titles, trailing_sep
+    ):
         """Test explicit path queries with different path specifications."""
         monkeypatch.setattr("beets.util.case_sensitive", lambda *_: True)
+        if path == r"c\.mp3$":
+            q = f"path::{path}"
+        elif path == r"/c/\x" and os.path.__name__ != "ntpath":
+            q = r"path:/c/\\x"
+        else:
+            q = f"path:{self.abs_query_path(path, trailing_sep=trailing_sep)}"
 
         assert {i.title for i in lib.items(q)} == set(expected_titles)
+
+    @pytest.mark.parametrize(
+        "query", ["path:", "path::"], ids=["path", "regex"]
+    )
+    def test_absolute(self, lib, helper, query):
+        item_path = helper.lib_path / "item.mp3"
+        bytes_path = os.fsencode(item_path)
+        helper.add_item(path=bytes_path, title="absolute item")
+        q = f"{query}{item_path}".replace("\\", "\\\\")
+
+        assert {i.title for i in lib.items(q)} == {"absolute item"}
+
+    def test_relative(self, lib, helper):
+        item_path = helper.lib_path / "relative" / "item.mp3"
+        bytes_path = os.fsencode(item_path)
+        helper.add_item(path=bytes_path, title="relative item")
+        q = "path:relative/item.mp3"
+
+        assert {i.title for i in lib.items(q)} == {"relative item"}
 
     @pytest.mark.skipif(sys.platform == "win32", reason=WIN32_NO_IMPLICIT_PATHS)
     @pytest.mark.parametrize(
@@ -345,7 +422,7 @@ class TestPathQuery:
         self, lib, monkeypatch, case_sensitive, expected_titles
     ):
         """Test path matching with different case sensitivity settings."""
-        q = "path:/a/b/c2.mp3"
+        q = f"path:{self.abs_query_path('/a/b/c2.mp3')}"
         monkeypatch.setattr(
             "beets.util.case_sensitive", lambda *_: case_sensitive
         )
@@ -524,3 +601,34 @@ class TestRelatedQueries:
     def test_related_query(self, lib, q, expected_titles, expected_albums):
         assert {i.album for i in lib.albums(q)} == set(expected_albums)
         assert {i.title for i in lib.items(q)} == set(expected_titles)
+
+
+class TestHasCoverArtQuery:
+    """Test has_cover_art computed field for detecting embedded cover art."""
+
+    @pytest.fixture(scope="class")
+    def lib(self, helper):
+        item_with = helper.add_item_fixture()
+        item_with.title = "with_art"
+
+        path_with = helper.create_mediafile_fixture(images=["jpg"])
+        item_with["path"] = path_with
+        item_with.store()
+
+        path_without = helper.create_mediafile_fixture(images=[])
+        item_without = helper.add_item_fixture()
+        item_without.title = "without_art"
+        item_without["path"] = path_without
+        item_without.store()
+
+        return helper.lib
+
+    @pytest.mark.parametrize(
+        "query, expected_titles",
+        [
+            ("has_cover_art:true", {"with_art"}),
+            ("has_cover_art:false", {"without_art"}),
+        ],
+    )
+    def test_has_cover_art_query(self, lib, query, expected_titles):
+        assert {i.title for i in lib.items(query)} == expected_titles

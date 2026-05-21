@@ -6,9 +6,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from beets.autotag import AlbumMatch
 from beets.autotag.distance import Distance
-from beets.autotag.hooks import AlbumInfo, TrackInfo
+from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
 from beets.library import Item
 from beets.test.helper import PluginMixin
 from beetsplug.mbpseudo import (
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
     import pathlib
 
     from beetsplug._typing import JSONDict
+    from beetsplug._utils.musicbrainz import Release
 
 
 @pytest.fixture(scope="module")
@@ -29,13 +29,13 @@ def rsrc_dir(pytestconfig: pytest.Config):
 
 
 @pytest.fixture
-def official_release(rsrc_dir: pathlib.Path) -> JSONDict:
+def official_release(rsrc_dir: pathlib.Path) -> Release:
     info_json = (rsrc_dir / "official_release.json").read_text(encoding="utf-8")
     return json.loads(info_json)
 
 
 @pytest.fixture
-def pseudo_release(rsrc_dir: pathlib.Path) -> JSONDict:
+def pseudo_release(rsrc_dir: pathlib.Path) -> Release:
     info_json = (rsrc_dir / "pseudo_release.json").read_text(encoding="utf-8")
     return json.loads(info_json)
 
@@ -93,6 +93,16 @@ class TestPseudoAlbumInfo:
         info.use_pseudo_as_ref()
         assert info.data_source == "test"
 
+    def test_raw_data(
+        self, official_release_info: AlbumInfo, pseudo_release_info: AlbumInfo
+    ):
+        # raw_data calls self.__class__(**self.copy()), which failed for
+        # PseudoAlbumInfo because its __init__ requires pseudo_release and
+        # official_release args that are not present in the flat copy() dict.
+        info = PseudoAlbumInfo(pseudo_release_info, official_release_info)
+        data = info.raw_data
+        assert data["album"] == "In Bloom"
+
 
 class TestMBPseudoMixin(PluginMixin):
     plugin = "mbpseudo"
@@ -130,9 +140,7 @@ class TestMBPseudoPlugin(TestMBPseudoMixin):
         ],
     )
     def test_extract_id_uses_music_brainz_pattern(
-        self,
-        mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        album_id: str,
+        self, mbpseudo_plugin: MusicBrainzPseudoReleasePlugin, album_id: str
     ):
         if album_id.startswith("-"):
             assert mbpseudo_plugin._extract_id(album_id) is None
@@ -142,28 +150,21 @@ class TestMBPseudoPlugin(TestMBPseudoMixin):
     def test_album_info_for_pseudo_release(
         self,
         mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        pseudo_release: JSONDict,
+        pseudo_release: Release,
     ):
         album_info = mbpseudo_plugin.album_info(pseudo_release)
         assert not isinstance(album_info, PseudoAlbumInfo)
         assert album_info.data_source == "MusicBrainzPseudoRelease"
         assert album_info.albumstatus == _STATUS_PSEUDO
 
-    @pytest.mark.parametrize(
-        "json_key",
-        [
-            "type",
-            "direction",
-            "release",
-        ],
-    )
+    @pytest.mark.parametrize("json_key", ["type", "direction", "release"])
     def test_interception_skip_when_rel_values_dont_match(
         self,
         mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        official_release: JSONDict,
+        official_release: Release,
         json_key: str,
     ):
-        del official_release["release-relations"][0][json_key]
+        del official_release["release_relations"][0][json_key]  # type: ignore[misc]
 
         album_info = mbpseudo_plugin.album_info(official_release)
         assert not isinstance(album_info, PseudoAlbumInfo)
@@ -172,10 +173,10 @@ class TestMBPseudoPlugin(TestMBPseudoMixin):
     def test_interception_skip_when_script_doesnt_match(
         self,
         mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        official_release: JSONDict,
+        official_release: Release,
     ):
-        official_release["release-relations"][0]["release"][
-            "text-representation"
+        official_release["release_relations"][0]["release"][
+            "text_representation"
         ]["script"] = "Null"
 
         album_info = mbpseudo_plugin.album_info(official_release)
@@ -185,15 +186,14 @@ class TestMBPseudoPlugin(TestMBPseudoMixin):
     def test_interception(
         self,
         mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        official_release: JSONDict,
+        official_release: Release,
     ):
         album_info = mbpseudo_plugin.album_info(official_release)
         assert isinstance(album_info, PseudoAlbumInfo)
         assert album_info.data_source == "MusicBrainzPseudoRelease"
 
     def test_final_adjustment_skip(
-        self,
-        mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
+        self, mbpseudo_plugin: MusicBrainzPseudoReleasePlugin
     ):
         match = AlbumMatch(
             distance=Distance(),
@@ -236,6 +236,39 @@ class TestMBPseudoPlugin(TestMBPseudoMixin):
         assert match.info.album_id == "pseudo"
         assert match.info.album == "In Bloom"
 
+    def test_final_adjustment_updates_match_mapping(
+        self,
+        mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
+        official_release_info: AlbumInfo,
+        pseudo_release_info: AlbumInfo,
+    ):
+        # Regression test: _adjust_final_album_match must update match.mapping,
+        # not album_info.mapping. Writing to album_info (an AttrDict/dict subclass)
+        # stored a {Item: TrackInfo} dict under "mapping", which then leaked into
+        # item_data and caused sqlite3.ProgrammingError on flex field storage.
+        pseudo_album_info = PseudoAlbumInfo(
+            pseudo_release=pseudo_release_info,
+            official_release=official_release_info,
+            data_source=mbpseudo_plugin.data_source,
+        )
+        item = Item()
+        item["title"] = "百花繚乱"
+        original_track = pseudo_album_info.tracks[0]
+
+        match = AlbumMatch(
+            distance=Distance(),
+            info=pseudo_album_info,
+            mapping={item: original_track},
+            extra_items=[],
+            extra_tracks=[],
+        )
+
+        mbpseudo_plugin._adjust_final_album_match(match)
+
+        # match.mapping must be reassigned; album_info must not store a dict value
+        assert "mapping" not in pseudo_album_info
+        assert not any(isinstance(v, dict) for v in pseudo_album_info.values())
+
 
 class TestMBPseudoPluginCustomTagsOnly(TestMBPseudoMixin):
     @pytest.fixture(scope="class")
@@ -246,7 +279,7 @@ class TestMBPseudoPluginCustomTagsOnly(TestMBPseudoMixin):
         self,
         config,
         mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        official_release: JSONDict,
+        official_release: Release,
     ):
         config["import"]["languages"] = ["en", "jp"]
         album_info = mbpseudo_plugin.album_info(official_release)
@@ -261,7 +294,7 @@ class TestMBPseudoPluginCustomTagsOnly(TestMBPseudoMixin):
         self,
         config,
         mbpseudo_plugin: MusicBrainzPseudoReleasePlugin,
-        official_release: JSONDict,
+        official_release: Release,
     ):
         config["import"]["languages"] = []
         album_info = mbpseudo_plugin.album_info(official_release)
