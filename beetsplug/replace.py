@@ -11,18 +11,22 @@ from beets.exceptions import UserError
 from beets.plugins import BeetsPlugin
 
 if TYPE_CHECKING:
+    import optparse
+    from collections.abc import Sequence
+
     from beets.library import Item, Library
 
 
 class ReplacePlugin(BeetsPlugin):
-    def commands(self):
+    def commands(self) -> list[ui.Subcommand]:
         cmd = ui.Subcommand(
             "replace", help="replace audio file while keeping tags"
         )
+        cmd.parser.add_limit_option()
         cmd.func = self.run
         return [cmd]
 
-    def run(self, lib: Library, args: list[str]) -> None:
+    def run(self, lib: Library, opts: optparse.Values, args: list[str]) -> None:
         if len(args) < 2:
             raise UserError("Usage: beet replace <query> <new_file_path>")
 
@@ -31,7 +35,7 @@ class ReplacePlugin(BeetsPlugin):
 
         self.file_check(new_file_path)
 
-        item_list = list(lib.items(item_query))
+        item_list = list(lib.items(item_query, limit=opts.limit))
 
         if not item_list:
             raise UserError("No matching songs found.")
@@ -60,7 +64,7 @@ class ReplacePlugin(BeetsPlugin):
         except mediafile.FileTypeError as fte:
             raise UserError(fte)
 
-    def select_song(self, items: list[Item]):
+    def select_song(self, items: Sequence[Item]) -> Item | None:
         """Present a menu of matching songs and get user selection."""
         ui.print_("\nMatching songs:")
         for i, item in enumerate(items, 1):
@@ -85,7 +89,7 @@ class ReplacePlugin(BeetsPlugin):
             except ValueError:
                 ui.print_("Invalid input. Please type in a number.")
 
-    def confirm_replacement(self, new_file_path: Path, song: Item):
+    def confirm_replacement(self, new_file_path: Path, song: Item) -> bool:
         """Get user confirmation for the replacement."""
         original_file_path: Path = Path(song.path.decode())
 

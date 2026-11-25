@@ -19,7 +19,8 @@ Configuration
 To configure the plugin, make a ``ftintitle:`` section in your configuration
 file. The available options are:
 
-- **auto**: Enable metadata rewriting during import. Default: ``yes``.
+- **auto**: Enable metadata rewriting during import and when fetched metadata is
+  later applied by commands such as ``mbsync``. Default: ``yes``.
 - **drop**: Remove featured artists entirely instead of adding them to the title
   field. Default: ``no``.
 - **format**: Defines the format for the featuring X part of the new title
@@ -60,10 +61,10 @@ From the command line, type:
 
 ::
 
-    $ beet ftintitle [QUERY]
+    $ beet ftintitle [-l LIMIT] [QUERY]
 
 The query is optional; if it's left off, the transformation will be applied to
-your entire collection.
+your entire collection. Use ``-l``/``--limit`` to cap the matched tracks.
 
 Use the ``-d`` flag to remove featured artists (equivalent of the ``drop``
 config option).

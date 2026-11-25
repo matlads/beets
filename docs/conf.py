@@ -14,12 +14,12 @@ sys.path.insert(0, str(Path(__file__).parent / "extensions"))
 
 project = "beets"
 AUTHOR = "Adrian Sampson"
-copyright = "2016, Adrian Sampson"
+copyright = "2016, Adrian Sampson"  # noqa: A001
 
 master_doc = "index"
 language = "en"
-version = "2.11"
-release = "2.11.0"
+version = "2.14"
+release = "2.14.1"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -74,7 +74,22 @@ linkcheck_ignore = [
     r"https://[^/]*fanart\.tv/",  # blocks requests
     r"https://[^/]*fandom\.com/",  # blocks requests
     r"https://imgur\.com/",  # not accessible from the UK
-    r"https://www.discogs.com/settings/developers",  # requires login
+    r"https://(www\.)?discogs.com.*",  # blocks requests
+    r"https://essentia.upf.edu/",  # times out in CI
+    r"https://flask.palletsprojects.com.*",  # times out in CI
+    r"https://search.worldcat.org.*",  # blocks requests
+    r"https://tidal.com.*",  # blocks requests
+    r"https://www.tekstowo.pl/",  # blocks requests
+    r"https://www.gnu.org.*",  # sometimes unreachable
+    r"https://www.nongnu.org.*",  # sometimes unreachable
+    r"https://web.archive.org.*",  # sometimes unreachable
+    r"https://www.sonos.com.*",  # blocks requests
+    r"https://stackoverflow.com.*",  # blocks requests
+    r"https://superuser.com.*",  # blocks requests
+    r"https://support.discogs.com.*",  # blocks requests
+    r"https://forge\.kanis\.fr.*",  # SSL cert issues
+    r"https://id3\.org.*",  # intermittent server errors
+    r"https://aka\.ms/.*",  # Microsoft short links block crawlers
 ]
 
 # Options for HTML output
@@ -134,11 +149,11 @@ html_static_path = ["_static"]
 html_css_files = ["beets.css"]
 
 
-def skip_member(app, what, name, obj, skip, options):
+def skip_member(app, what, name: str, obj, skip, options):
     if name.startswith("_"):
         return True
     return skip
 
 
-def setup(app):
+def setup(app) -> None:
     app.connect("autodoc-skip-member", skip_member)

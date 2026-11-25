@@ -8,15 +8,23 @@ emby:
     password: password
 """
 
+from __future__ import annotations
+
 import hashlib
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 import requests
 
 from beets.plugins import BeetsPlugin
 
+if TYPE_CHECKING:
+    from beets.library import LibModel, Library
 
-def api_url(host, port, endpoint):
+    from ._typing import JSONDict
+
+
+def api_url(host: str, port: int, endpoint: str) -> str:
     """Returns a joined url.
 
     Takes host, port and endpoint and generates a valid emby API url.
@@ -32,7 +40,7 @@ def api_url(host, port, endpoint):
     """
     # check if http or https is defined as host and create hostname
     hostname_list = [host]
-    if host.startswith("http://") or host.startswith("https://"):
+    if host.startswith(("http://", "https://")):
         hostname = "".join(hostname_list)
     else:
         hostname_list.insert(0, "http://")
@@ -49,7 +57,7 @@ def api_url(host, port, endpoint):
     return urlunsplit((scheme, netloc, path, new_query_string, fragment))
 
 
-def password_data(username, password):
+def password_data(username: str, password: str) -> JSONDict:
     """Returns a dict with username and its encoded password.
 
     :param username: Emby username
@@ -66,7 +74,7 @@ def password_data(username, password):
     }
 
 
-def create_headers(user_id, token=None):
+def create_headers(user_id: str, token: str | None = None) -> dict[str, str]:
     """Return header dict that is needed to talk to the Emby API.
 
     :param user_id: Emby user ID
@@ -94,7 +102,9 @@ def create_headers(user_id, token=None):
     return headers
 
 
-def get_token(host, port, headers, auth_data):
+def get_token(
+    host: str, port: int, headers: dict[str, str], auth_data: JSONDict
+) -> str | None:
     """Return token for a user.
 
     :param host: Emby host
@@ -114,7 +124,7 @@ def get_token(host, port, headers, auth_data):
     return r.json().get("AccessToken")
 
 
-def get_user(host, port, username):
+def get_user(host: str, port: int, username: str) -> list[JSONDict]:
     """Return user dict from server or None if there is no user.
 
     :param host: Emby host
@@ -128,13 +138,11 @@ def get_user(host, port, username):
     """
     url = api_url(host, port, "/Users/Public")
     r = requests.get(url, timeout=10)
-    user = [i for i in r.json() if i["Name"] == username]
-
-    return user
+    return [i for i in r.json() if i["Name"] == username]
 
 
 class EmbyUpdate(BeetsPlugin):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("emby")
 
         # Adding defaults.
@@ -155,11 +163,11 @@ class EmbyUpdate(BeetsPlugin):
 
         self.register_listener("database_change", self.listen_for_db_change)
 
-    def listen_for_db_change(self, lib, model):
+    def listen_for_db_change(self, lib: Library, model: LibModel) -> None:
         """Listens for beets db change and register the update for the end."""
         self.register_listener("cli_exit", self.update)
 
-    def update(self, lib):
+    def update(self, lib: Library) -> None:
         """When the client exists try to send refresh request to Emby."""
         self._log.info("Updating Emby library...")
 

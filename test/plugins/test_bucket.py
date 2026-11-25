@@ -1,24 +1,9 @@
-# This file is part of beets.
-# Copyright 2016, Fabrice Laporte.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for the 'bucket' plugin."""
 
 from datetime import datetime
 
 import pytest
 
-from beets import config
 from beets.exceptions import UserError
 from beets.test.helper import BeetsTestCase
 from beetsplug import bucket
@@ -36,10 +21,10 @@ class BucketPluginTest(BeetsTestCase):
         bucket_alpha_regex={},
         extrapolate=False,
     ):
-        config["bucket"]["bucket_year"] = bucket_year
-        config["bucket"]["bucket_alpha"] = bucket_alpha
-        config["bucket"]["bucket_alpha_regex"] = bucket_alpha_regex
-        config["bucket"]["extrapolate"] = extrapolate
+        self.config["bucket"]["bucket_year"] = bucket_year
+        self.config["bucket"]["bucket_alpha"] = bucket_alpha
+        self.config["bucket"]["bucket_alpha_regex"] = bucket_alpha_regex
+        self.config["bucket"]["extrapolate"] = extrapolate
         self.plugin.setup()
 
     def test_year_single_year(self):

@@ -1,18 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Thomas Scholtes.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
-
 import time
 from datetime import datetime
 
@@ -31,7 +16,7 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Do not match unset values
         out = self.list("myint:1..3")
-        assert "" == out
+        assert out == ""
 
         self.modify("myint=2")
         item.load()
@@ -47,7 +32,7 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Do not match unset values
         out = self.list_album("myint:1..3")
-        assert "" == out
+        assert out == ""
 
         self.modify("-a", "myint=2")
         album.load()
@@ -63,7 +48,7 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Do not match unset values
         out = self.list("myfloat:10..0")
-        assert "" == out
+        assert out == ""
 
         self.modify("myfloat=-9.1")
         item.load()
@@ -81,7 +66,7 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Do not match unset values
         out = self.list("mybool:true, mybool:false")
-        assert "" == out
+        assert out == ""
 
         # Set true
         self.modify("mybool=1", "artist:true")
@@ -95,14 +80,9 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Query bools
         out = self.list("mybool:true", "$artist $mybool")
-        assert "true True" == out
+        assert out == "true True"
 
         out = self.list("mybool:false", "$artist $mybool")
-
-        # Dealing with unset fields?
-        # assert 'false False' == out
-        # out = self.list('mybool:', '$artist $mybool')
-        # assert 'unset $mybool' in out
 
     def test_date_modify_and_query(self):
         self.config["types"] = {"mydate": "date"}
@@ -113,7 +93,7 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Do not match unset values
         out = self.list("mydate:..2000")
-        assert "" == out
+        assert out == ""
 
         self.modify("mydate=1999-01-01", "artist:prince")
         old.load()
@@ -125,11 +105,10 @@ class TypesPluginTest(IOMixin, PluginTestCase):
 
         # Match in range
         out = self.list("mydate:..1999-07", "$artist $mydate")
-        assert "prince 1999-01-01" == out
+        assert out == "prince 1999-01-01"
 
-        # FIXME some sort of timezone issue here
-        # out = self.list('mydate:1999-12-30', '$artist $mydate')
-        # assert 'britney 1999-12-30' == out
+        out = self.list("mydate:1999-12-30", "$artist $mydate")
+        assert out == "britney 1999-12-30"
 
     def test_unknown_type_error(self):
         self.config["types"] = {"flex": "unkown type"}

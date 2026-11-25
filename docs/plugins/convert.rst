@@ -21,10 +21,12 @@ Usage
 
 To convert a part of your collection, run ``beet convert QUERY``. The command
 will transcode all the files matching the query to the destination directory
-given by the ``-d`` (``--dest``) option or the ``dest`` configuration. The path
-layout mirrors that of your library, but it may be customized through the
-``paths`` configuration. Files that have been previously converted---and thus
-already exist in the destination directory---will be skipped.
+given by the ``-d`` (``--dest``) option or the ``dest`` configuration. Use
+``--limit`` to cap the matched items or albums before conversion; the short
+``-l`` option is already used by ``--link``. The path layout mirrors that of
+your library, but it may be customized through the ``paths`` configuration.
+Files that have been previously converted---and thus already exist in the
+destination directory---will be skipped.
 
 The plugin uses a command-line program to transcode the audio. With the ``-f``
 (``--format``) option you can choose the transcoding command and customize the
@@ -64,11 +66,22 @@ absolute or relative to the ``dest`` directory. The contents will always be
 relative paths to media files, which tries to ensure compatibility when read
 from external drives or on computers other than the one used for the conversion.
 There is one caveat though: A list generated on Unix/macOS can't be read on
-Windows and vice versa.
+Windows and vice versa. Depending on the beets user's settings a generated
+playlist potentially could contain unicode characters. This is supported,
+playlists are written in `M3U8 format`_.
 
-Depending on the beets user's settings a generated playlist potentially could
-contain unicode characters. This is supported, playlists are written in `M3U8
-format`_.
+The ``-r`` (or ``--refresh``) option allows to refresh the converted files if
+the originals ones are modified. It instructs the plugin to compare the
+timestamps of the latest modification for both the originals and the converted
+files. If an original file is newer than a converted file, the converted file
+will be removed from the filesystem, and the original file will be converted
+once again.
+
+Plugin Event
+------------
+
+After successfully converting or copying an item, this plugin sends the
+``after_convert`` event. See :ref:`plugin_events` for its listener parameters.
 
 Configuration
 -------------
@@ -162,6 +175,9 @@ The available options are:
   as well. The final destination of the playlist file will always be relative to
   the destination path (``dest``, ``--dest``, ``-d``). This configuration is
   overridden by the ``-m`` (``--playlist``) command line option. Default: none.
+- **refresh**: Refresh the converted files if needed by re-converting modified
+  original files. This configuration is overridden by the ``-r`` (``--refresh``)
+  command line option. Default: ``false``.
 
 You can also configure the format to use for transcoding (see the next section):
 

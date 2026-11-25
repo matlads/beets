@@ -1,28 +1,27 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for discogs plugin."""
 
-from unittest.mock import Mock, patch
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
+from discogs_client import Client, Release
+from discogs_client.exceptions import MalformedResponseError
 
-from beets import config
 from beets.library import Item
-from beets.test._common import Bag
+from beets.metadata_plugins import SearchParams
 from beets.test.helper import TestHelper
 from beetsplug.discogs import ArtistState, DiscogsPlugin
+
+from .factories import discogs as factories
+
+if TYPE_CHECKING:
+    from beetsplug.discogs import types
+
+
+_p = pytest.param
 
 
 def _artist(name: str, **kwargs):
@@ -37,29 +36,58 @@ def _artist(name: str, **kwargs):
     } | kwargs
 
 
-class PytestTestHelper(TestHelper):
-    """Same as the BeetsTestCase unittest setup but for pytest."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.setup_beets()
-        try:
-            yield
-        finally:
-            self.teardown_beets()
+def audio_track(
+    title: str, position: str = "", duration: str = "", **kwargs
+) -> types.AudioTrack:
+    kwargs.update(title=title, position=position, duration=duration)
+    return factories.AudioTrackFactory.build(**kwargs)
 
 
-@patch("beetsplug.discogs.DiscogsPlugin.setup", Mock())
-class TestDGAlbumInfo(PytestTestHelper):
+def index_track(
+    title: str, sub_tracks: list[types.AudioTrack], **kwargs
+) -> types.IndexTrack:
+    kwargs.update(title=title, sub_tracks=sub_tracks)
+    return factories.IndexTrackFactory.build(**kwargs)
+
+
+def heading_track(title: str, **kwargs) -> types.HeadingTrack:
+    kwargs.update(title=title)
+    return factories.HeadingTrackFactory.build(**kwargs)
+
+
+def get_release(data: dict[str, Any]) -> Release:
+    return Release(Client("doesn't matter"), data)
+
+
+@pytest.fixture(autouse=True)
+def _patch_discogs_setup(monkeypatch):
+    """Autouse fixture to patch DiscogsPlugin.setup for each test."""
+    monkeypatch.setattr(
+        "beetsplug.discogs.DiscogsPlugin.setup", lambda *_: None
+    )
+
+
+class DiscogsTestMixin:
+    @pytest.fixture
+    def plugin_config(self):
+        return {}
+
+    @pytest.fixture
+    def plugin(self, config, plugin_config):
+        config["discogs"].set(plugin_config)
+        return DiscogsPlugin()
+
     def _make_release(self, tracks=None):
-        """Returns a Bag that mimics a discogs_client.Release. The list
-        of elements on the returned Bag is incomplete, including just
-        those required for the tests on this class."""
+        """Return discogs_client.Release.
+
+        The returned object is incomplete, including just the fields required
+        for tests in this module.
+        """
         data = {
-            "id": "ALBUM ID",
-            "uri": "https://www.discogs.com/release/release/13633721",
+            "id": 11111111,
+            "uri": "https://www.discogs.com/release/111111111",
             "title": "ALBUM TITLE",
-            "year": "3001",
+            "year": 3001,
             "artists": [_artist("ARTIST NAME", join=",")],
             "formats": [
                 {
@@ -72,44 +100,25 @@ class TestDGAlbumInfo(PytestTestHelper):
             "genres": ["STYLE1", "STYLE2"],
             "styles": ["GENRE1", "GENRE2"],
             "labels": [{"name": "LABEL NAME", "catno": "CATALOG NUMBER"}],
-            "tracklist": [],
+            "tracklist": tracks or [],
         }
 
-        if tracks:
-            for recording in tracks:
-                data["tracklist"].append(recording)
-
-        return Bag(
-            data=data,
-            # Make some fields available as properties, as they are
-            # accessed by DiscogsPlugin methods.
-            title=data["title"],
-            artists=[Bag(data=d) for d in data["artists"]],
-        )
-
-    def _make_track(self, title, position="", duration="", type_=None):
-        track = {"title": title, "position": position, "duration": duration}
-        if type_ is not None:
-            # Test samples on discogs_client do not have a 'type_' field, but
-            # the API seems to return it. Values: 'track' for regular tracks,
-            # 'heading' for descriptive texts (ie. not real tracks - 12.13.2).
-            track["type_"] = type_
-
-        return track
+        return get_release(data)
 
     def _make_release_from_positions(self, positions):
-        """Return a Bag that mimics a discogs_client.Release with a
-        tracklist where tracks have the specified `positions`."""
+        """Return discogs_client.Release with tracks at the given positions."""
         tracks = [
-            self._make_track(f"TITLE{i}", position)
+            audio_track(f"TITLE{i}", position)
             for (i, position) in enumerate(positions, start=1)
         ]
         return self._make_release(tracks)
 
+
+class TestDGAlbumInfo(DiscogsTestMixin, TestHelper):
     def test_parse_media_for_tracks(self):
         tracks = [
-            self._make_track("TITLE ONE", "1", "01:01"),
-            self._make_track("TITLE TWO", "2", "02:02"),
+            audio_track("TITLE ONE", "1", "01:01"),
+            audio_track("TITLE TWO", "2", "02:02"),
         ]
         release = self._make_release(tracks=tracks)
 
@@ -190,183 +199,20 @@ class TestDGAlbumInfo(PytestTestHelper):
         assert t[3].index == 4
         assert t[3].medium_total == 1
 
-    def test_parse_tracklist_without_sides(self):
-        """Test standard Discogs position 12.2.9#1: "without sides"."""
-        release = self._make_release_from_positions(["1", "2", "3"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1
-        assert len(d.tracks) == 3
-
-    def test_parse_tracklist_with_sides(self):
-        """Test standard Discogs position 12.2.9#2: "with sides"."""
-        release = self._make_release_from_positions(["A1", "A2", "B1", "B2"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1  # 2 sides = 1 LP
-        assert len(d.tracks) == 4
-
-    def test_parse_tracklist_multiple_lp(self):
-        """Test standard Discogs position 12.2.9#3: "multiple LP"."""
-        release = self._make_release_from_positions(["A1", "A2", "B1", "C1"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 2  # 3 sides = 1 LP + 1 LP
-        assert len(d.tracks) == 4
-
-    def test_parse_tracklist_multiple_cd(self):
-        """Test standard Discogs position 12.2.9#4: "multiple CDs"."""
-        release = self._make_release_from_positions(
-            ["1-1", "1-2", "2-1", "3-1"]
-        )
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 3
-        assert len(d.tracks) == 4
-
-    def test_parse_tracklist_non_standard(self):
-        """Test non standard Discogs position."""
-        release = self._make_release_from_positions(["I", "II", "III", "IV"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1
-        assert len(d.tracks) == 4
-
-    def test_parse_tracklist_subtracks_dot(self):
-        """Test standard Discogs position 12.2.9#5: "sub tracks, dots"."""
-        release = self._make_release_from_positions(["1", "2.1", "2.2", "3"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1
-        assert len(d.tracks) == 3
-
-        release = self._make_release_from_positions(
-            ["A1", "A2.1", "A2.2", "A3"]
-        )
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1
-        assert len(d.tracks) == 3
-
-    def test_parse_tracklist_subtracks_letter(self):
-        """Test standard Discogs position 12.2.9#5: "sub tracks, letter"."""
-        release = self._make_release_from_positions(["A1", "A2a", "A2b", "A3"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1
-        assert len(d.tracks) == 3
-
-        release = self._make_release_from_positions(
-            ["A1", "A2.a", "A2.b", "A3"]
-        )
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 1
-        assert len(d.tracks) == 3
-
-    def test_parse_tracklist_subtracks_extra_material(self):
-        """Test standard Discogs position 12.2.9#6: "extra material"."""
-        release = self._make_release_from_positions(["1", "2", "Video 1"])
-        d = DiscogsPlugin().get_album_info(release)
-
-        assert d.mediums == 2
-        assert len(d.tracks) == 3
-
-    def test_parse_tracklist_subtracks_indices(self):
-        """Test parsing of subtracks that include index tracks."""
-        release = self._make_release_from_positions(["", "", "1.1", "1.2"])
-        # Track 1: Index track with medium title
-        release.data["tracklist"][0]["title"] = "MEDIUM TITLE"
-        # Track 2: Index track with track group title
-        release.data["tracklist"][1]["title"] = "TRACK GROUP TITLE"
-
-        d = DiscogsPlugin().get_album_info(release)
-        assert d.mediums == 1
-        assert d.tracks[0].disctitle == "MEDIUM TITLE"
-        assert len(d.tracks) == 1
-        assert d.tracks[0].title == "TRACK GROUP TITLE"
-
-    def test_parse_tracklist_subtracks_nested_logical(self):
-        """Test parsing of subtracks defined inside a index track that are
-        logical subtracks (ie. should be grouped together into a single track).
-        """
-        release = self._make_release_from_positions(["1", "", "3"])
-        # Track 2: Index track with track group title, and sub_tracks
-        release.data["tracklist"][1]["title"] = "TRACK GROUP TITLE"
-        release.data["tracklist"][1]["sub_tracks"] = [
-            self._make_track("TITLE ONE", "2.1", "01:01"),
-            self._make_track("TITLE TWO", "2.2", "02:02"),
-        ]
-
-        d = DiscogsPlugin().get_album_info(release)
-        assert d.mediums == 1
-        assert len(d.tracks) == 3
-        assert d.tracks[1].title == "TRACK GROUP TITLE"
-
-    def test_parse_tracklist_subtracks_nested_physical(self):
-        """Test parsing of subtracks defined inside a index track that are
-        physical subtracks (ie. should not be grouped together).
-        """
-        release = self._make_release_from_positions(["1", "", "4"])
-        # Track 2: Index track with track group title, and sub_tracks
-        release.data["tracklist"][1]["title"] = "TRACK GROUP TITLE"
-        release.data["tracklist"][1]["sub_tracks"] = [
-            self._make_track("TITLE ONE", "2", "01:01"),
-            self._make_track("TITLE TWO", "3", "02:02"),
-        ]
-
-        d = DiscogsPlugin().get_album_info(release)
-        assert d.mediums == 1
-        assert len(d.tracks) == 4
-        assert d.tracks[1].title == "TITLE ONE"
-        assert d.tracks[2].title == "TITLE TWO"
-
-    def test_parse_tracklist_disctitles(self):
-        """Test parsing of index tracks that act as disc titles."""
-        release = self._make_release_from_positions(
-            ["", "1-1", "1-2", "", "2-1"]
-        )
-        # Track 1: Index track with medium title (Cd1)
-        release.data["tracklist"][0]["title"] = "MEDIUM TITLE CD1"
-        # Track 4: Index track with medium title (Cd2)
-        release.data["tracklist"][3]["title"] = "MEDIUM TITLE CD2"
-
-        d = DiscogsPlugin().get_album_info(release)
-        assert d.mediums == 2
-        assert d.tracks[0].disctitle == "MEDIUM TITLE CD1"
-        assert d.tracks[1].disctitle == "MEDIUM TITLE CD1"
-        assert d.tracks[2].disctitle == "MEDIUM TITLE CD2"
-        assert len(d.tracks) == 3
-
     def test_parse_minimal_release(self):
         """Test parsing of a release with the minimal amount of information."""
         data = {
             "id": 123,
             "uri": "https://www.discogs.com/release/123456-something",
-            "tracklist": [self._make_track("A", "1", "01:01")],
+            "tracklist": [audio_track("A", "1", "01:01")],
             "artists": [_artist("ARTIST NAME", id=321)],
             "title": "TITLE",
         }
-        release = Bag(
-            data=data,
-            title=data["title"],
-            artists=[Bag(data=d) for d in data["artists"]],
-        )
+        release = get_release(data)
         d = DiscogsPlugin().get_album_info(release)
         assert d.artist == "ARTIST NAME"
         assert d.album == "TITLE"
         assert len(d.tracks) == 1
-
-    def test_parse_release_without_required_fields(self, caplog):
-        """Test parsing of a release that does not have the required fields."""
-        release = Bag(data={}, refresh=lambda *args: None)
-        with caplog.at_level("DEBUG"):
-            d = DiscogsPlugin().get_album_info(release)
-
-        assert d is None
-        assert (
-            "Release does not contain the required fields" in caplog.messages[0]
-        )
 
     def test_default_genre_style_settings(self):
         """Test genre default settings, genres to genre, styles to style"""
@@ -376,7 +222,7 @@ class TestDGAlbumInfo(PytestTestHelper):
         assert d.style == "STYLE1, STYLE2"
         assert d.genres == ["GENRE1", "GENRE2"]
 
-    def test_append_style_to_genre(self):
+    def test_append_style_to_genre(self, config):
         """Test appending style to genre if config enabled"""
         config["discogs"]["append_style_genre"] = True
         release = self._make_release_from_positions(["1", "2"])
@@ -385,7 +231,7 @@ class TestDGAlbumInfo(PytestTestHelper):
         assert d.style == "STYLE1, STYLE2"
         assert d.genres == ["GENRE1", "GENRE2", "STYLE1", "STYLE2"]
 
-    def test_append_style_to_genre_no_styles(self):
+    def test_append_style_to_genre_no_styles(self, config):
         """Test nothing appended to genre if style is empty"""
         config["discogs"]["append_style_genre"] = True
         release = self._make_release_from_positions(["1", "2"])
@@ -395,80 +241,285 @@ class TestDGAlbumInfo(PytestTestHelper):
         assert d.style is None
         assert d.genres == ["GENRE1", "GENRE2"]
 
-    def test_strip_disambiguation(self):
+    @pytest.mark.parametrize(
+        "released, expected",
+        [
+            _p("2000-08-13", (2000, 8, 13), id="full-date"),
+            _p("2000-08", (2000, 8, None), id="year-and-month"),
+            _p("2000", (2000, None, None), id="year-only"),
+            _p("2000-00-00", (2000, None, None), id="zeroed-month-and-day"),
+            _p("2000-08-00", (2000, 8, None), id="zeroed-day"),
+            _p("2000-8-1", (2000, 8, 1), id="unpadded"),
+            _p("  2000-08-13  ", (2000, 8, 13), id="surrounding-whitespace"),
+            # Fall back to the release's own `year` field.
+            _p("", (3001, None, None), id="empty"),
+            _p(None, (3001, None, None), id="missing"),
+            _p("0000-00-00", (3001, None, None), id="zeroed-date"),
+            _p("13 Aug 2000", (3001, None, None), id="unparseable"),
+        ],
+    )
+    def test_parse_release_date(self, released, expected):
+        release = self._make_release_from_positions(["1"])
+        release.data["released"] = released
+
+        d = DiscogsPlugin().get_album_info(release)
+
+        assert (d.year, d.month, d.day) == expected
+
+    def test_original_date_without_master(self):
+        """A release without a master release is its own original."""
+        release = self._make_release_from_positions(["1"])
+        release.data["released"] = "2000-08-13"
+
+        d = DiscogsPlugin().get_album_info(release)
+
+        assert (d.original_year, d.original_month, d.original_day) == (
+            2000,
+            8,
+            13,
+        )
+
+    def test_original_date_with_master(self, monkeypatch):
+        """Only the master release's year is known, so it alone is used."""
+        monkeypatch.setattr(DiscogsPlugin, "get_master_year", lambda *_: 1990)
+        release = self._make_release_from_positions(["1"])
+        release.data["released"] = "2000-08-13"
+        release.data["master_id"] = 22222222
+
+        d = DiscogsPlugin().get_album_info(release)
+
+        assert (d.year, d.month, d.day) == (2000, 8, 13)
+        assert (d.original_year, d.original_month, d.original_day) == (
+            1990,
+            None,
+            None,
+        )
+
+
+class TestStripDisambiguation(DiscogsTestMixin):
+    @pytest.fixture
+    def album_info(self, plugin):
+        data = {
+            "id": 123,
+            "uri": "https://www.discogs.com/release/123456-something",
+            "tracklist": [
+                {
+                    "title": "track",
+                    "position": "A",
+                    "type_": "track",
+                    "duration": "5:44",
+                    "artists": [_artist("TEST ARTIST (5)", id=11146)],
+                }
+            ],
+            "artists": [
+                _artist("ARTIST NAME (2)", id=321, join="&"),
+                _artist("OTHER ARTIST (5)", id=322),
+            ],
+            "title": "title",
+            "labels": [{"name": "LABEL NAME (5)", "catno": "catalog number"}],
+        }
+        return plugin.get_album_info(get_release(data))
+
+    @pytest.mark.parametrize("plugin_config", [{"strip_disambiguation": True}])
+    def test_strip_disambiguation(self, album_info):
         """Test removing disambiguation from all disambiguated fields."""
-        data = {
-            "id": 123,
-            "uri": "https://www.discogs.com/release/123456-something",
-            "tracklist": [
-                {
-                    "title": "track",
-                    "position": "A",
-                    "type_": "track",
-                    "duration": "5:44",
-                    "artists": [_artist("TEST ARTIST (5)", id=11146)],
-                }
-            ],
-            "artists": [
-                _artist("ARTIST NAME (2)", id=321, join="&"),
-                _artist("OTHER ARTIST (5)", id=322),
-            ],
-            "title": "title",
-            "labels": [{"name": "LABEL NAME (5)", "catno": "catalog number"}],
-        }
-        release = Bag(
-            data=data,
-            title=data["title"],
-            artists=[Bag(data=d) for d in data["artists"]],
-        )
-        d = DiscogsPlugin().get_album_info(release)
-        assert d.artist == "ARTIST NAME & OTHER ARTIST"
-        assert d.artists == ["ARTIST NAME", "OTHER ARTIST"]
-        assert d.artists_ids == ["321", "322"]
-        assert d.tracks[0].artist == "TEST ARTIST"
-        assert d.tracks[0].artists == ["TEST ARTIST"]
-        assert d.tracks[0].artist_id == "11146"
-        assert d.tracks[0].artists_ids == ["11146"]
-        assert d.label == "LABEL NAME"
+        assert album_info.artist == "ARTIST NAME & OTHER ARTIST"
+        assert album_info.artists == ["ARTIST NAME", "OTHER ARTIST"]
+        assert album_info.artists_ids == ["321", "322"]
+        assert album_info.tracks[0].artist == "TEST ARTIST"
+        assert album_info.tracks[0].artists == ["TEST ARTIST"]
+        assert album_info.tracks[0].artist_id == "11146"
+        assert album_info.tracks[0].artists_ids == ["11146"]
+        assert album_info.label == "LABEL NAME"
 
-    def test_strip_disambiguation_false(self):
+    @pytest.mark.parametrize("plugin_config", [{"strip_disambiguation": False}])
+    def test_dont_strip_disambiguation(self, album_info):
         """Test disabling disambiguation removal from all disambiguated fields."""
-        config["discogs"]["strip_disambiguation"] = False
-        data = {
-            "id": 123,
-            "uri": "https://www.discogs.com/release/123456-something",
-            "tracklist": [
-                {
-                    "title": "track",
-                    "position": "A",
-                    "type_": "track",
-                    "duration": "5:44",
-                    "artists": [_artist("TEST ARTIST (5)", id=11146)],
-                }
+        assert album_info.artist == "ARTIST NAME (2) & OTHER ARTIST (5)"
+        assert album_info.artists == ["ARTIST NAME (2)", "OTHER ARTIST (5)"]
+        assert album_info.tracks[0].artist == "TEST ARTIST (5)"
+        assert album_info.tracks[0].artists == ["TEST ARTIST (5)"]
+        assert album_info.label == "LABEL NAME (5)"
+
+
+class TestTracklist(DiscogsTestMixin):
+    @pytest.mark.parametrize(
+        "positions,expected_mediums,expected_tracks",
+        [
+            _p(["1", "2", "3"], 1, 3, id="without-sides"),
+            _p(["A1", "A2", "B1", "B2"], 1, 4, id="with-sides"),
+            _p(["A1", "A2", "B1", "C1"], 2, 4, id="multiple-lp"),
+            _p(["1-1", "1-2", "2-1", "3-1"], 3, 4, id="multiple-cd"),
+            _p(["I", "II", "III", "IV"], 1, 4, id="non-standard"),
+            _p(["1", "2.1", "2.2", "3"], 1, 3, id="subtracks-dot"),
+            _p(["A1", "A2.1", "A2.2", "A3"], 1, 3, id="subtracks-dot-with-sides"),
+            _p(["A1", "A2a", "A2b", "A3"], 1, 3, id="subtracks-letter"),
+            _p(["A1", "A2.a", "A2.b", "A3"], 1, 3, id="subtracks-letter-with-dot"),
+            _p(["1.1", "1.2", "2.1", "2.2"], 1, 2, id="multiple-subtrack-groups"),
+            _p(["1", "2", "Video 1"], 2, 3, id="subtracks-extra-material"),
+        ],
+    )  # fmt: skip
+    def test_parse_tracklist_positions(
+        self, plugin, positions, expected_mediums, expected_tracks
+    ):
+        release = self._make_release_from_positions(positions)
+        d = plugin.get_album_info(release)
+
+        assert d.mediums == expected_mediums
+        assert len(d.tracks) == expected_tracks
+
+    @pytest.mark.parametrize(
+        "plugin_config,tracks,expected_mediums,expected_tracks",
+        [
+            _p(
+                {"index_tracks": False},
+                [
+                    heading_track("MEDIUM TITLE"),
+                    audio_track("TITLE ONE", "1.1"),
+                    audio_track("TITLE TWO", "1.2"),
+                ],
+                1,
+                [("TITLE ONE / TITLE TWO", "MEDIUM TITLE")],
+                id="flat-logical-subtracks",
+            ),
+            _p(
+                {"index_tracks": False},
+                [
+                    audio_track("TITLE ONE", "1"),
+                    index_track(
+                        "TRACK GROUP TITLE",
+                        [
+                            audio_track("SUBTITLE ONE", "2.1", "01:01"),
+                            audio_track("SUBTITLE TWO", "2.2", "02:02"),
+                        ],
+                    ),
+                    audio_track("TITLE THREE", "3"),
+                ],
+                1,
+                [
+                    ("TITLE ONE", None),
+                    ("TRACK GROUP TITLE", None),
+                    ("TITLE THREE", None),
+                ],
+                id="nested-logical-subtracks",
+            ),
+            _p(
+                {"index_tracks": False},
+                [
+                    audio_track("TITLE ONE", "1"),
+                    index_track(
+                        "TRACK GROUP TITLE",
+                        [
+                            audio_track("SUBTITLE ONE", "2", "01:01"),
+                            audio_track("SUBTITLE TWO", "3", "02:02"),
+                        ],
+                    ),
+                    audio_track("TITLE FOUR", "4"),
+                ],
+                1,
+                [
+                    ("TITLE ONE", None),
+                    ("SUBTITLE ONE", None),
+                    ("SUBTITLE TWO", None),
+                    ("TITLE FOUR", None),
+                ],
+                id="nested-physical-subtracks",
+            ),
+            _p(
+                {"index_tracks": True},
+                [
+                    audio_track("TITLE ONE", "1"),
+                    index_track(
+                        "TRACK GROUP TITLE",
+                        [
+                            audio_track("SUBTITLE ONE", "2", "01:01"),
+                            audio_track("SUBTITLE TWO", "3", "02:02"),
+                        ],
+                    ),
+                    audio_track("TITLE FOUR", "4"),
+                ],
+                1,
+                [
+                    ("TITLE ONE", None),
+                    ("TRACK GROUP TITLE: SUBTITLE ONE", None),
+                    ("TRACK GROUP TITLE: SUBTITLE TWO", None),
+                    ("TITLE FOUR", None),
+                ],
+                id="nested-physical-subtracks-with-index-tracks",
+            ),
+            _p(
+                {"index_tracks": False},
+                [
+                    heading_track("MEDIUM TITLE CD1"),
+                    audio_track("TITLE ONE", "1-1"),
+                    audio_track("TITLE TWO", "1-2"),
+                    heading_track("MEDIUM TITLE CD2"),
+                    audio_track("TITLE THREE", "2-1"),
+                ],
+                2,
+                [
+                    ("TITLE ONE", "MEDIUM TITLE CD1"),
+                    ("TITLE TWO", "MEDIUM TITLE CD1"),
+                    ("TITLE THREE", "MEDIUM TITLE CD2"),
+                ],
+                id="medium-titles",
+            ),
+        ],
+    )  # fmt: skip
+    def test_parse_tracklist_index_tracks(
+        self, plugin, tracks, expected_mediums, expected_tracks
+    ):
+        release = self._make_release(tracks)
+        album = plugin.get_album_info(release)
+
+        assert album.mediums == expected_mediums
+        assert [(t.title, t.disctitle) for t in album.tracks] == expected_tracks
+
+    def test_parse_tracklist_inherited_artists(self, plugin):
+        """Verify grouped tracks combine explicit and inherited artist credits.
+
+        This covers releases where a track group provides the default artist for
+        sub-tracks that do not declare one themselves.
+
+        Note: this is based on the following release:
+        https://www.discogs.com/release/3647530
+        """
+        track_artist = "TRACK ARTIST"
+        group_artist = "GROUP ARTIST"
+        tracks = [
+            index_track(
+                "TRACK GROUP TITLE",
+                [
+                    audio_track(
+                        "TRACK ONE", "2", artists=[_artist(track_artist)]
+                    ),
+                    audio_track("SUBTITLE TWO", "3"),
+                ],
+                artists=[_artist(group_artist)],
+            )
+        ]
+        release = self._make_release(tracks)
+        album = plugin.get_album_info(release)
+
+        assert album.mediums == 1
+        assert {t.artist for t in album.tracks} == {track_artist, group_artist}
+
+    def test_coalesce_logical_index_as_audio_track(self, plugin):
+        index = index_track(
+            "TRACK GROUP TITLE",
+            [
+                audio_track("SUBTITLE ONE", "2.1"),
+                audio_track("SUBTITLE TWO", "2.2"),
             ],
-            "artists": [
-                _artist("ARTIST NAME (2)", id=321, join="&"),
-                _artist("OTHER ARTIST (5)", id=322),
-            ],
-            "title": "title",
-            "labels": [{"name": "LABEL NAME (5)", "catno": "catalog number"}],
-        }
-        release = Bag(
-            data=data,
-            title=data["title"],
-            artists=[Bag(data=d) for d in data["artists"]],
+            duration="03:03",
         )
-        d = DiscogsPlugin().get_album_info(release)
-        assert d.artist == "ARTIST NAME (2) & OTHER ARTIST (5)"
-        assert d.artists == ["ARTIST NAME (2)", "OTHER ARTIST (5)"]
-        assert d.tracks[0].artist == "TEST ARTIST (5)"
-        assert d.tracks[0].artists == ["TEST ARTIST (5)"]
-        assert d.label == "LABEL NAME (5)"
-        config["discogs"]["strip_disambiguation"] = True
+
+        assert plugin._coalesce_tracks([index]) == [
+            audio_track("TRACK GROUP TITLE", "2", "03:03")
+        ]
 
 
-@patch("beetsplug.discogs.DiscogsPlugin.setup", Mock())
-class TestDGSearchQuery(PytestTestHelper):
+class TestDGSearchQuery(TestHelper):
     def test_default_search_filters_without_extra_tags(self):
         """Discogs search uses only the type filter when no extra_tags are set."""
         plugin = DiscogsPlugin()
@@ -481,7 +532,7 @@ class TestDGSearchQuery(PytestTestHelper):
         assert "Album" in query
         assert filters == {"type": "release"}
 
-    def test_extra_tags_populate_discogs_filters(self):
+    def test_extra_tags_populate_discogs_filters(self, config):
         """Configured extra_tags should populate Discogs search filters."""
         plugin = DiscogsPlugin()
         plugin.config["extra_tags"] = ["label", "catalognum"]
@@ -502,13 +553,91 @@ class TestDGSearchQuery(PytestTestHelper):
         assert filters["catno"] == "ABC123"
         config["discogs"]["extra_tags"] = []
 
+    @pytest.mark.parametrize(
+        "media,expected",
+        [("Digital Media", "File"), ("WEB", "File"), ("Vinyl", "Vinyl")],
+    )
+    def test_extra_tags_normalize_media(self, config, media, expected):
+        plugin = DiscogsPlugin()
+        plugin.config["extra_tags"] = ["media"]
+
+        items = [Item(media=media)]
+
+        _query, filters = plugin.get_search_query_with_filters(
+            "album", items, "Artist", "Album", False
+        )
+
+        assert filters["format"] == expected
+        config["discogs"]["extra_tags"] = []
+
+    def test_extra_tags_normalize_media_before_plurality(self, config):
+        plugin = DiscogsPlugin()
+        plugin.config["extra_tags"] = ["media"]
+
+        items = [
+            Item(media="Digital Media"),
+            Item(media="Digital Media"),
+            Item(media="WEB"),
+            Item(media="WEB"),
+            Item(media="Vinyl"),
+            Item(media="Vinyl"),
+            Item(media="Vinyl"),
+        ]
+
+        _query, filters = plugin.get_search_query_with_filters(
+            "album", items, "Artist", "Album", False
+        )
+
+        assert filters["format"] == "File"
+        config["discogs"]["extra_tags"] = []
+
+
+class TestDGSearchResponse(DiscogsTestMixin):
+    @staticmethod
+    def _malformed_response_error() -> MalformedResponseError:
+        original_exception = json.JSONDecodeError("Expecting value", "", 0)
+        return MalformedResponseError(
+            status_code=200,
+            content=b"invalid JSON",
+            original_exception=original_exception,
+        )
+
+    @pytest.fixture
+    def params(self):
+        return SearchParams("album", "Album", {"type": "release"}, 5)
+
+    @pytest.fixture
+    def client(self, plugin):
+        plugin.discogs_client = MagicMock()
+        return plugin.discogs_client
+
+    def test_retries_invalid_json_response(self, plugin, client, params):
+        result = MagicMock(data={"id": 123})
+        results = client.search.return_value
+        results.page.side_effect = [self._malformed_response_error(), [result]]
+
+        assert plugin.get_search_response(params) == [{"id": 123}]
+        assert client.search.call_count == 2
+        assert results.page.call_count == 2
+        assert results.per_page == params.limit
+
+    def test_raises_after_invalid_json_retry(self, plugin, client, params):
+        results = client.search.return_value
+        results.page.side_effect = [
+            self._malformed_response_error(),
+            self._malformed_response_error(),
+        ]
+
+        with pytest.raises(MalformedResponseError):
+            plugin.get_search_response(params)
+
+        assert client.search.call_count == 2
+        assert results.page.call_count == 2
+
 
 class TestAnv:
     @pytest.fixture
-    def album_info(self, monkeypatch, anv_config):
-        monkeypatch.setattr(
-            "beetsplug.discogs.DiscogsPlugin.setup", lambda _: None
-        )
+    def album_info(self, config, anv_config):
         data = {
             "id": 123,
             "uri": "https://www.discogs.com/release/123456-something",
@@ -534,17 +663,12 @@ class TestAnv:
             ],
             "title": "title",
         }
-        release = Bag(
-            data=data,
-            title=data["title"],
-            artists=[Bag(data=d) for d in data["artists"]],
-        )
-        plugin = DiscogsPlugin()
-        plugin.config["anv"].set(
+        release = get_release(data)
+        config["discogs"]["anv"].set(
             {"artist": False, "album_artist": False, "artist_credit": False}
             | anv_config
         )
-        return plugin.get_album_info(release)
+        return DiscogsPlugin().get_album_info(release)
 
     @staticmethod
     def _assert_fields(obj, expected):
@@ -629,8 +753,7 @@ class TestAnv:
         self._assert_fields(album_info, expected_album_fields)
 
 
-@patch("beetsplug.discogs.DiscogsPlugin.setup", Mock())
-def test_anv_album_artist():
+def test_anv_album_artist(config):
     """Test using artist name variations when the album artist
     is the same as the track artist, but only the track artist
     should use the artist name variation."""
@@ -648,11 +771,7 @@ def test_anv_album_artist():
         "artists": [_artist("ARTIST (4)", id=321, anv="VARIATION")],
         "title": "title",
     }
-    release = Bag(
-        data=data,
-        title=data["title"],
-        artists=[Bag(data=d) for d in data["artists"]],
-    )
+    release = get_release(data)
     config["discogs"]["anv"]["album_artist"] = False
     config["discogs"]["anv"]["artist"] = True
     config["discogs"]["anv"]["artist_credit"] = False
@@ -668,58 +787,43 @@ def test_anv_album_artist():
     assert r.tracks[0].artists_credit == ["ARTIST"]
 
 
-@pytest.mark.parametrize(
-    (
-        "track,expected_artist,expected_artists,expected_artists_ids,"
-        "expected_composers"
-    ),
-    [
-        (
-            {
-                "type_": "track",
-                "title": "track",
-                "position": "1",
-                "duration": "5:00",
-                "artists": [
-                    _artist("NEW ARTIST", id=11146, join="&"),
-                    _artist("VOCALIST", id=344, join="feat."),
-                ],
-                "extraartists": [
-                    _artist("SOLOIST", id=3, role="Featuring"),
-                    _artist(
-                        "PERFORMER (1)", id=5, role="Other Role, Featuring"
-                    ),
-                    _artist("RANDOM", id=8, role="Written-By"),
-                    _artist("MUSICIAN", id=10, role="Featuring [Uncredited]"),
-                ],
-            },
-            "NEW ARTIST & VOCALIST feat. SOLOIST, PERFORMER, MUSICIAN",
-            ["NEW ARTIST", "VOCALIST", "SOLOIST", "PERFORMER", "MUSICIAN"],
-            ["11146", "344", "3", "5", "10"],
-            ["RANDOM"],
-        )
-    ],
-)
-@patch("beetsplug.discogs.DiscogsPlugin.setup", Mock())
-def test_parse_featured_artists(
-    track,
-    expected_artist,
-    expected_artists,
-    expected_artists_ids,
-    expected_composers,
-):
+def test_parse_featured_artists():
     """Tests the plugins ability to parse a featured artist.
     Ignores artists that are not listed as featured."""
+    track = {
+        "type_": "track",
+        "title": "track",
+        "position": "1",
+        "duration": "5:00",
+        "artists": [
+            _artist("NEW ARTIST", id=11146, join="&"),
+            _artist("VOCALIST", id=344, join="feat."),
+        ],
+        "extraartists": [
+            _artist("SOLOIST", id=3, role="Featuring"),
+            _artist("PERFORMER (1)", id=5, role="Other Role, Featuring"),
+            _artist("RANDOM", id=8, role="Written-By"),
+            _artist("MUSICIAN", id=10, role="Featuring [Uncredited]"),
+        ],
+    }
+
     plugin = DiscogsPlugin()
     artistinfo = ArtistState.from_config(plugin.config, [_artist("ARTIST")])
     t, _, _ = plugin.get_track_info(track, 1, 1, artistinfo)
-    assert t.artist == expected_artist
-    assert t.artists == expected_artists
-    assert t.artists_ids == expected_artists_ids
-    assert t.composers == expected_composers
+    assert (
+        t.artist == "NEW ARTIST & VOCALIST feat. SOLOIST, PERFORMER, MUSICIAN"
+    )
+    assert t.artists == [
+        "NEW ARTIST",
+        "VOCALIST",
+        "SOLOIST",
+        "PERFORMER",
+        "MUSICIAN",
+    ]
+    assert t.artists_ids == ["11146", "344", "3", "5", "10"]
+    assert t.composers == ["RANDOM"]
 
 
-@patch("beetsplug.discogs.DiscogsPlugin.setup", Mock())
 def test_parse_extraartist_roles():
     plugin = DiscogsPlugin()
     artistinfo = ArtistState.from_config(plugin.config, [_artist("ARTIST")])
@@ -770,32 +874,25 @@ def test_get_media_and_albumtype(formats, expected_media, expected_albumtype):
     assert result == (expected_media, expected_albumtype)
 
 
-@pytest.mark.parametrize(
-    "given_artists,expected_info,config_va_name",
-    [
-        (
-            [_artist("Various")],
-            {
-                "artist": "VARIOUS ARTISTS",
-                "artist_id": "1",
-                "artists": ["VARIOUS ARTISTS"],
-                "artists_ids": ["1"],
-                "artist_credit": "VARIOUS ARTISTS",
-                "artists_credit": ["VARIOUS ARTISTS"],
-                "arrangers": None,
-                "composers": None,
-                "remixers": None,
-                "lyricists": None,
-            },
-            "VARIOUS ARTISTS",
-        )
-    ],
-)
-@patch("beetsplug.discogs.DiscogsPlugin.setup", Mock())
-def test_va_buildartistinfo(given_artists, expected_info, config_va_name):
-    config["va_name"] = config_va_name
+def test_va_buildartistinfo(config):
+    config["va_name"] = "VARIOUS ARTISTS"
+    expected_info = {
+        "artist": "VARIOUS ARTISTS",
+        "artist_id": "1",
+        "artists": ["VARIOUS ARTISTS"],
+        "artists_ids": ["1"],
+        "artist_credit": "VARIOUS ARTISTS",
+        "artists_credit": ["VARIOUS ARTISTS"],
+        "arrangers": None,
+        "composers": None,
+        "remixers": None,
+        "lyricists": None,
+    }
+
     assert (
-        ArtistState.from_config(DiscogsPlugin().config, given_artists).info
+        ArtistState.from_config(
+            DiscogsPlugin().config, [_artist("Various")]
+        ).info
         == expected_info
     )
 

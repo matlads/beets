@@ -486,6 +486,11 @@ drop2beets_
 dsedivec_
     Has two plugins: ``edit`` and ``moveall``.
 
+beets-fdup_
+    Finds duplicate tracks by fuzzy matching fields such as artist and title, so
+    tracks whose tags differ still match. Labels versions such as live
+    recordings, remixes and remasters.
+
 beets-filetote_
     Helps bring non-music extra files, attachments, and artifacts during imports
     and CLI file manipulation actions (``beet move``, etc.).
@@ -500,6 +505,14 @@ beets-follow_
 beetFs_
     Is a FUSE filesystem for browsing the music in your beets library. (Might be
     out of date.)
+
+beets-genrecanon_
+    Maps existing genres into a separate, user-defined canonical taxonomy while
+    preserving the original genre metadata.
+
+beets-getlrc_
+    Fetches synced and non-synced lyrics and creates .lrc files to be used by
+    compatible music players.
 
 beets-goingrunning_
     Generates playlists to go with your running sessions.
@@ -542,6 +555,10 @@ beets-plexsync_
     Allows you to sync your Plex library with your beets library, create smart
     playlists in Plex, and import online playlists (from services like Spotify)
     into Plex.
+
+beets-pysacd_
+    Imports SACD ISO images: converts each layer to DSF or FLAC with pysacd_, on
+    its own medium of the MusicBrainz release.
 
 beets-setlister_
     Generate playlists from the setlists of a given artist.
@@ -615,11 +632,17 @@ beets-youtube_
 
 .. _beets-describe: https://github.com/adamjakab/BeetsPluginDescribe
 
+.. _beets-fdup: https://github.com/RACGriffiths/beets-fdup
+
 .. _beets-filetote: https://github.com/gtronset/beets-filetote
 
 .. _beets-fillmissing: https://github.com/amiv1/beets-fillmissing
 
 .. _beets-follow: https://github.com/nolsto/beets-follow
+
+.. _beets-genrecanon: https://codeberg.org/gbcox/beets-genrecanon
+
+.. _beets-getlrc: https://github.com/jaedonswanson/beets-getlrc
 
 .. _beets-goingrunning: https://pypi.org/project/beets-goingrunning
 
@@ -642,6 +665,8 @@ beets-youtube_
 .. _beets-originquery: https://github.com/x1ppy/beets-originquery
 
 .. _beets-plexsync: https://github.com/arsaboo/beets-plexsync
+
+.. _beets-pysacd: https://github.com/aclater/beets-pysacd
 
 .. _beets-setlister: https://github.com/tomjaspers/beets-setlister
 
@@ -670,6 +695,8 @@ beets-youtube_
 .. _dsedivec: https://github.com/dsedivec/beets-plugins
 
 .. _ibroadcast: https://ibroadcast.com/
+
+.. _pysacd: https://github.com/aclater/pysacd
 
 .. _subsonic api: https://www.subsonic.org/pages/api.jsp
 

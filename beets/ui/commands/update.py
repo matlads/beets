@@ -1,27 +1,54 @@
 """The `update` command: Update library contents according to on-disk tags."""
 
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING, Protocol
 
 from beets import library, logging, ui
-from beets.util import ancestry, syspath
+from beets.exceptions import UserError
+from beets.util import FilesystemError, syspath
 from beets.util.color import colorize
 
-from .utils import do_query
+if TYPE_CHECKING:
+    from collections.abc import Collection, Sequence
+
+    from beets.library import Item, Library
+
 
 # Global logger.
 log = logging.getLogger("beets")
 
 
-def update_items(lib, query, album, move, pretend, fields, exclude_fields=None):
-    """For all the items matched by the query, update the library to
-    reflect the item's embedded tags.
+class UpdateCLIOpts(Protocol):
+    album: bool
+    exclude_fields: list[str] | None
+    fields: list[str] | None
+    limit: int | None
+    move: bool | None
+    pretend: bool
+
+
+def update_items(
+    lib: Library,
+    items: Sequence[Item],
+    move: bool,
+    pretend: bool,
+    fields: list[str] | None,
+    exclude_fields: Sequence[str] | None = None,
+) -> None:
+    """For all items, update the library to reflect the item's embedded tags.
+
     :param fields: The fields to be stored. If not specified, all fields will
     be.
     :param exclude_fields: The fields to not be stored. If not specified, all
     fields will be.
     """
+    if not items:
+        raise UserError("No matching items to update.")
+
+    item_fields: Collection[str]
     with lib.transaction():
-        items, _ = do_query(lib, query, album)
         if move and fields is not None and "path" not in fields:
             # Special case: if an item needs to be moved, the path field has to
             # updated; otherwise the new path will not be reflected in the
@@ -38,10 +65,14 @@ def update_items(lib, query, album, move, pretend, fields, exclude_fields=None):
             item_fields = fields
         # get all the album fields to update
         album_fields = fields or library.Album._fields.keys()
-        if exclude_fields:
+        if exclude_fields_set := set(exclude_fields or []):
             # remove any excluded fields from the item and album sets
-            item_fields = [f for f in item_fields if f not in exclude_fields]
-            album_fields = [f for f in album_fields if f not in exclude_fields]
+            item_fields = [
+                f for f in item_fields if f not in exclude_fields_set
+            ]
+            album_fields = [
+                f for f in album_fields if f not in exclude_fields_set
+            ]
 
         # Walk through the items and pick up their changes.
         affected_albums = set()
@@ -73,11 +104,13 @@ def update_items(lib, query, album, move, pretend, fields, exclude_fields=None):
             # Special-case album artist when it matches track artist. (Hacky
             # but necessary for preserving album-level metadata for non-
             # autotagged imports.)
-            if not item.albumartist:
-                old_item = lib.get_item(item.id)
-                if old_item.albumartist == old_item.artist == item.artist:
-                    item.albumartist = old_item.albumartist
-                    item._dirty.discard("albumartist")
+            if (
+                not item.albumartist
+                and item.id is not None
+                and (old_item := lib.get_item(item.id))
+            ) and old_item.albumartist == old_item.artist == item.artist:
+                item.albumartist = old_item.albumartist
+                item._dirty.discard("albumartist")
 
             # Check for and display changes.
             changed = ui.show_model_changes(item, fields=item_fields)
@@ -86,8 +119,12 @@ def update_items(lib, query, album, move, pretend, fields, exclude_fields=None):
             if not pretend:
                 if changed:
                     # Move the item if it's in the library.
-                    if move and lib.directory in ancestry(item.path):
-                        item.move(store=False)
+                    if move and lib.contains(item):
+                        try:
+                            item.move(store=False)
+                        except FilesystemError as exc:
+                            log.error("error moving {.filepath}: {}", item, exc)
+                            continue
 
                     item.store(fields=item_fields)
                     affected_albums.add(item.album_id)
@@ -110,7 +147,9 @@ def update_items(lib, query, album, move, pretend, fields, exclude_fields=None):
             if not album:  # Empty albums have already been removed.
                 log.debug("emptied album {}", album_id)
                 continue
-            first_item = album.items().get()
+
+            if not (first_item := album.items().get()):
+                continue
 
             # Update album structure to reflect an item in it.
             for key in library.Album.item_keys:
@@ -118,29 +157,37 @@ def update_items(lib, query, album, move, pretend, fields, exclude_fields=None):
             album.store(fields=album_fields)
 
             # Move album art (and any inconsistent items).
-            if move and lib.directory in ancestry(first_item.path):
+            if move and lib.contains(first_item):
                 log.debug("moving album {}", album_id)
 
                 # Manually moving and storing the album.
                 items = list(album.items())
-                for item in items:
-                    item.move(store=False, with_album=False)
-                    item.store(fields=item_fields)
-                album.move(store=False)
-                album.store(fields=album_fields)
+                try:
+                    for item in items:
+                        item.move(store=False, with_album=False)
+                        item.store(fields=item_fields)
+                    album.move(store=False)
+                    album.store(fields=album_fields)
+                except FilesystemError as exc:
+                    log.error("error moving album {}: {}", album, exc)
 
 
-def update_func(lib, opts, args):
+def update_func(lib: Library, opts: UpdateCLIOpts, args: list[str]) -> None:
     # Verify that the library folder exists to prevent accidental wipes.
-    if not os.path.isdir(syspath(lib.directory)):
+    if not lib.directory.is_dir():
         ui.print_("Library path is unavailable or does not exist.")
-        ui.print_(lib.directory)
+        ui.print_(str(lib.directory))
         if not ui.input_yn("Are you sure you want to continue (y/n)?", True):
             return
+    if opts.album:
+        items = [
+            i for a in lib.albums(args, limit=opts.limit) for i in a.items()
+        ]
+    else:
+        items = list(lib.items(args, limit=opts.limit))
     update_items(
         lib,
-        args,
-        opts.album,
+        items,
         ui.should_move(opts.move),
         opts.pretend,
         opts.fields,
@@ -171,6 +218,7 @@ update_cmd.parser.add_option(
     "-p",
     "--pretend",
     action="store_true",
+    default=False,
     help="show all changes but do nothing",
 )
 update_cmd.parser.add_option(
@@ -189,4 +237,5 @@ update_cmd.parser.add_option(
     dest="exclude_fields",
     help="list of fields to exclude from updates",
 )
+update_cmd.parser.add_limit_option()
 update_cmd.func = update_func

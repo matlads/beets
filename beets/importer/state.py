@@ -1,34 +1,25 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 from __future__ import annotations
 
 import logging
 import os
 import pickle
+import threading
 from bisect import bisect_left, insort
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from beets import config
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from beets.util import PathBytes
 
 
 # Global logger.
 log = logging.getLogger("beets")
+
+_lock = threading.Lock()
 
 
 @dataclass
@@ -61,19 +52,35 @@ class ImportState:
     taghistory: set[tuple[PathBytes, ...]]
     path: PathBytes
 
-    def __init__(self, readonly=False, path: PathBytes | None = None):
+    def __init__(
+        self, readonly: bool = False, path: PathBytes | None = None
+    ) -> None:
         self.path = path or os.fsencode(config["statefile"].as_filename())
         self.tagprogress = {}
         self.taghistory = set()
         self._open()
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
+        _lock.acquire()
+        try:
+            self._open()  # read latest state
+        except BaseException:
+            _lock.release()
+            raise
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._save()
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        try:
+            self._save()
+        finally:
+            _lock.release()
 
-    def _open(self):
+    def _open(self) -> None:
         try:
             with open(self.path, "rb") as f:
                 state = pickle.load(f)
@@ -87,9 +94,10 @@ class ImportState:
             # full list!).
             log.debug("state file could not be read: {}", exc)
 
-    def _save(self):
+    def _save(self) -> None:
+        tmp_path = self.path + b".tmp"
         try:
-            with open(self.path, "wb") as f:
+            with open(tmp_path, "wb") as f:
                 pickle.dump(
                     {
                         "tagprogress": self.tagprogress,
@@ -97,12 +105,14 @@ class ImportState:
                     },
                     f,
                 )
+            # Atomic swap so readers never see a partially written file
+            os.replace(tmp_path, self.path)
         except OSError as exc:
             log.error("state file could not be written: {}", exc)
 
     # -------------------------------- Tagprogress ------------------------------- #
 
-    def progress_add(self, toppath: PathBytes, *paths: PathBytes):
+    def progress_add(self, toppath: PathBytes, *paths: PathBytes) -> None:
         """Record that the files under all of the `paths` have been imported
         under `toppath`.
         """
@@ -126,7 +136,7 @@ class ImportState:
         """
         return toppath in self.tagprogress
 
-    def progress_reset(self, toppath: PathBytes | None):
+    def progress_reset(self, toppath: PathBytes | None) -> None:
         """Reset the progress for `toppath`."""
         with self as state:
             if toppath in state.tagprogress:
@@ -134,7 +144,7 @@ class ImportState:
 
     # -------------------------------- Taghistory -------------------------------- #
 
-    def history_add(self, paths: list[PathBytes]):
+    def history_add(self, paths: list[PathBytes]) -> None:
         """Add the paths to the history."""
         with self as state:
             state.taghistory.add(tuple(paths))

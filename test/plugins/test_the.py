@@ -1,12 +1,14 @@
 """Tests for the 'the' plugin"""
 
-import unittest
+from typing import ClassVar
 
-from beets import config
+from beets.test.helper import PluginTestHelper
 from beetsplug.the import FORMAT, PATTERN_A, PATTERN_THE, ThePlugin
 
 
-class ThePluginTest(unittest.TestCase):
+class TestThePlugin(PluginTestHelper):
+    plugin: ClassVar[str] = "the"
+
     def test_unthe_with_default_patterns(self):
         assert ThePlugin().unthe("", PATTERN_THE) == ""
         assert (
@@ -30,7 +32,7 @@ class ThePluginTest(unittest.TestCase):
         )
 
     def test_unthe_with_strip(self):
-        config["the"]["strip"] = True
+        self.config["the"]["strip"] = True
         assert ThePlugin().unthe("The Something", PATTERN_THE) == "Something"
         assert ThePlugin().unthe("An A", PATTERN_A) == "A"
 
@@ -40,11 +42,11 @@ class ThePluginTest(unittest.TestCase):
         assert ThePlugin().the_template_func("An A") == "A, An"
 
     def test_custom_pattern(self):
-        config["the"]["patterns"] = ["^test\\s"]
-        config["the"]["format"] = FORMAT
+        self.config["the"]["patterns"] = ["^test\\s"]
+        self.config["the"]["format"] = FORMAT
         assert ThePlugin().the_template_func("test passed") == "passed, test"
 
     def test_custom_format(self):
-        config["the"]["patterns"] = [PATTERN_THE, PATTERN_A]
-        config["the"]["format"] = "{1} ({0})"
+        self.config["the"]["patterns"] = [PATTERN_THE, PATTERN_A]
+        self.config["the"]["format"] = "{1} ({0})"
         assert ThePlugin().the_template_func("The A") == "The (A)"

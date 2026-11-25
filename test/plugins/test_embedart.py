@@ -1,47 +1,34 @@
-# This file is part of beets.
-# Copyright 2016, Thomas Scholtes.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 from __future__ import annotations
 
 import os
-import os.path
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
 from mediafile import MediaFile
 
-from beets import config, logging
+from beets import logging
 from beets.exceptions import UserError
 from beets.test import _common
+from beets.test.fixtures import DummyIMBackend
 from beets.test.helper import (
+    NEEDS_FFPROBE,
     FetchImageHelper,
     ImportHelper,
     IOMixin,
     PluginMixin,
-    TestHelper,
 )
-from beets.util import bytestring_path, displayable_path, syspath
 from beets.util.artresizer import ArtResizer
 from beetsplug._utils import art
-from test.test_art_resize import DummyIMBackend
 
 if TYPE_CHECKING:
     from beets.test.helper import ImageRequestMocker
+
+_p = pytest.param
 
 
 def require_artresizer_compare(test):
@@ -58,9 +45,9 @@ def require_artresizer_compare(test):
         # handle that in ArtResizer.IMBackend.{can_compare,compare}.
         # Skipping the tests as below is a quick fix to CI, but users may
         # still see unexpected behaviour.
-        abbey_artpath = os.path.join(_common.RSRC, b"abbey.jpg")
-        abbey_similarpath = os.path.join(_common.RSRC, b"abbey-similar.jpg")
-        abbey_differentpath = os.path.join(_common.RSRC, b"abbey-different.jpg")
+        abbey_artpath = _common.RSRC / "abbey.jpg"
+        abbey_similarpath = _common.RSRC / "abbey-similar.jpg"
+        abbey_differentpath = _common.RSRC / "abbey-different.jpg"
         compare_threshold = 20
 
         similar_compares_ok = ArtResizer.shared.compare(
@@ -78,41 +65,17 @@ def require_artresizer_compare(test):
     return wrapper
 
 
-class PytestPluginTestHelper(PluginMixin, TestHelper):
-    """Same as the BeetsTestCase unittest setup but for pytest."""
-
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.setup_beets()
-        try:
-            yield
-        finally:
-            self.teardown_beets()
-
-
-class PytestImportHelper(PytestPluginTestHelper, ImportHelper):
-    @pytest.fixture(autouse=True)
-    def setup_import_helper(self, setup):
-        self.import_media = []
-        self.lib.path_formats = [
-            ("default", os.path.join("$artist", "$album", "$title")),
-            ("singleton:true", os.path.join("singletons", "$title")),
-            ("comp:true", os.path.join("compilations", "$album", "$title")),
-        ]
-
-
-class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
+class TestEmbedartCli(PluginMixin, IOMixin, ImportHelper, FetchImageHelper):
     plugin = "embedart"
-    small_artpath = os.path.join(_common.RSRC, b"image-2x3.jpg")
-    abbey_artpath = os.path.join(_common.RSRC, b"abbey.jpg")
-    abbey_similarpath = os.path.join(_common.RSRC, b"abbey-similar.jpg")
-    abbey_differentpath = os.path.join(_common.RSRC, b"abbey-different.jpg")
+    small_artpath = _common.RSRC / "image-2x3.jpg"
+    abbey_artpath = _common.RSRC / "abbey.jpg"
+    abbey_similarpath = _common.RSRC / "abbey-similar.jpg"
+    abbey_differentpath = _common.RSRC / "abbey-different.jpg"
 
     def _setup_data(self, artpath=None):
         if not artpath:
             artpath = self.small_artpath
-        with open(syspath(artpath), "rb") as f:
-            self.image_data = f.read()
+        self.image_data = artpath.read_bytes()
 
     def test_embed_art_from_file_with_yes_input(self):
         self._setup_data()
@@ -120,7 +83,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         item = album.items()[0]
         self.io.addinput("y")
         self.run_command("embedart", "-f", self.small_artpath)
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.images[0].data == self.image_data
 
     def test_embed_art_from_file_with_no_input(self):
@@ -129,7 +92,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         item = album.items()[0]
         self.io.addinput("n")
         self.run_command("embedart", "-f", self.small_artpath)
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         # make sure that images array is empty (nothing embedded)
         assert not mediafile.images
 
@@ -138,7 +101,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         album = self.add_album_fixture()
         item = album.items()[0]
         self.run_command("embedart", "-y", "-f", self.small_artpath)
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.images[0].data == self.image_data
 
     def test_embed_art_from_album(self):
@@ -148,7 +111,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         album.artpath = self.small_artpath
         album.store()
         self.run_command("embedart", "-y")
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.images[0].data == self.image_data
 
     def test_embed_art_remove_art_file(self):
@@ -158,21 +121,19 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         logging.getLogger("beets.embedart").setLevel(logging.DEBUG)
 
         handle, tmp_path = tempfile.mkstemp()
-        tmp_path = bytestring_path(tmp_path)
+        tmp_path = Path(tmp_path)
         os.write(handle, self.image_data)
         os.close(handle)
 
         album.artpath = tmp_path
         album.store()
 
-        config["embedart"]["remove_art_file"] = True
-        self.run_command("embedart", "-y")
+        with self.configure_plugin({"remove_art_file": True}):
+            self.run_command("embedart", "-y")
 
-        if os.path.isfile(syspath(tmp_path)):
-            os.remove(syspath(tmp_path))
-            pytest.fail(
-                f"Artwork file {displayable_path(tmp_path)} was not deleted"
-            )
+        if tmp_path.is_file():
+            tmp_path.unlink()
+            pytest.fail(f"Artwork file {tmp_path} was not deleted")
 
     def test_art_file_missing(self):
         self.add_album_fixture()
@@ -185,16 +146,16 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         logging.getLogger("beets.embedart").setLevel(logging.DEBUG)
 
         handle, tmp_path = tempfile.mkstemp()
-        tmp_path = bytestring_path(tmp_path)
+        tmp_path = Path(tmp_path)
         os.write(handle, b"I am not an image.")
         os.close(handle)
 
         try:
             self.run_command("embedart", "-y", "-f", tmp_path)
         finally:
-            os.remove(syspath(tmp_path))
+            tmp_path.unlink()
 
-        mediafile = MediaFile(syspath(album.items()[0].path))
+        mediafile = MediaFile(album.items()[0].filepath)
         assert not mediafile.images  # No image added.
 
     @require_artresizer_compare
@@ -203,12 +164,12 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         album = self.add_album_fixture()
         item = album.items()[0]
         self.run_command("embedart", "-y", "-f", self.abbey_artpath)
-        config["embedart"]["compare_threshold"] = 20
-        self.run_command("embedart", "-y", "-f", self.abbey_differentpath)
-        mediafile = MediaFile(syspath(item.path))
+        with self.configure_plugin({"compare_threshold": 20}):
+            self.run_command("embedart", "-y", "-f", self.abbey_differentpath)
+        mediafile = MediaFile(item.filepath)
 
         assert mediafile.images[0].data == self.image_data, (
-            f"Image written is not {displayable_path(self.abbey_artpath)}"
+            f"Image written is not {self.abbey_artpath}"
         )
 
     @require_artresizer_compare
@@ -217,33 +178,58 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         album = self.add_album_fixture()
         item = album.items()[0]
         self.run_command("embedart", "-y", "-f", self.abbey_artpath)
-        config["embedart"]["compare_threshold"] = 20
-        self.run_command("embedart", "-y", "-f", self.abbey_similarpath)
-        mediafile = MediaFile(syspath(item.path))
+        with self.configure_plugin({"compare_threshold": 20}):
+            self.run_command("embedart", "-y", "-f", self.abbey_similarpath)
+        mediafile = MediaFile(item.filepath)
 
         assert mediafile.images[0].data == self.image_data, (
-            f"Image written is not {displayable_path(self.abbey_similarpath)}"
+            f"Image written is not {self.abbey_similarpath}"
         )
 
-    def test_non_ascii_album_path(self):
-        resource_path = os.path.join(_common.RSRC, b"image.mp3")
+    @pytest.mark.parametrize(
+        "filename, expect_error",
+        [
+            _p("extracted", False, id="success-filename"),
+            _p("/absolute/cover", True, id="error-absolute"),
+            _p("subdir/cover", True, id="error-subdir"),
+            _p(tempfile.gettempdir(), True, id="error-directory"),
+        ],
+    )
+    def test_filename_opt(self, caplog, filename, expect_error):
+        resource_path = _common.RSRC / "image.mp3"
         album = self.add_album_fixture()
-        trackpath = album.items()[0].path
-        shutil.copy(syspath(resource_path), syspath(trackpath))
+        trackpath = album.items()[0].filepath
+        shutil.copy(resource_path, trackpath)
+        converted_path = album.filepath / "extracted.png"
 
-        self.run_command("extractart", "-n", "extracted")
+        with caplog.at_level("DEBUG"):
+            self.run_command("extractart", "-a", "-n", filename)
 
-        assert (album.filepath / "extracted.png").exists()
+        if expect_error:
+            assert "Only specify a name rather than a path" in caplog.text
+            assert not converted_path.exists()
+        else:
+            assert converted_path.exists()
 
     def test_extracted_extension(self):
-        resource_path = os.path.join(_common.RSRC, b"image-jpeg.mp3")
+        resource_path = _common.RSRC / "image-jpeg.mp3"
         album = self.add_album_fixture()
-        trackpath = album.items()[0].path
-        shutil.copy(syspath(resource_path), syspath(trackpath))
+        trackpath = album.items()[0].filepath
+        shutil.copy(resource_path, trackpath)
 
-        self.run_command("extractart", "-n", "extracted")
+        self.run_command("extractart", "-a", "-n", "extracted")
 
         assert (album.filepath / "extracted.jpg").exists()
+
+    def test_extract_output_expands_home(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        album = self.add_album_fixture()
+        shutil.copy(_common.RSRC / "image-jpeg.mp3", album.items()[0].filepath)
+
+        self.run_command("extractart", "-o", "~/cover")
+
+        assert (tmp_path / "cover.jpg").exists()
 
     def test_clear_art_with_yes_input(self):
         self._setup_data()
@@ -251,19 +237,19 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         item = album.items()[0]
         self.io.addinput("y")
         self.run_command("embedart", "-f", self.small_artpath)
-        embedded_time = os.path.getmtime(syspath(item.path))
+        embedded_time = item.filepath.stat().st_mtime
 
         self.io.addinput("y")
         self.run_command("clearart")
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert not mediafile.images
-        clear_time = os.path.getmtime(syspath(item.path))
+        clear_time = item.filepath.stat().st_mtime
         assert clear_time > embedded_time
 
         # A run on a file without an image should not be modified
         self.io.addinput("y")
         self.run_command("clearart")
-        no_clear_time = os.path.getmtime(syspath(item.path))
+        no_clear_time = item.filepath.stat().st_mtime
         assert no_clear_time == clear_time
 
     def test_clear_art_with_no_input(self):
@@ -274,7 +260,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         self.run_command("embedart", "-f", self.small_artpath)
         self.io.addinput("n")
         self.run_command("clearart")
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.images[0].data == self.image_data
 
     def test_embed_art_from_url_with_yes_input(
@@ -288,7 +274,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
         )
         self.io.addinput("y")
         self.run_command("embedart", "-u", "http://example.com/test.jpg")
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.images[0].data == image_request_mock.IMAGE_HEADERS[
             "image/jpeg"
         ].ljust(32, b"\x00")
@@ -303,7 +289,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
             "http://example.com/test.png", content_type="image/png"
         )
         self.run_command("embedart", "-y", "-u", "http://example.com/test.png")
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.images[0].data == image_request_mock.IMAGE_HEADERS[
             "image/png"
         ].ljust(32, b"\x00")
@@ -318,9 +304,10 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
             "http://example.com/test.html", content_type="text/html"
         )
         self.run_command("embedart", "-y", "-u", "http://example.com/test.html")
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert not mediafile.images
 
+    @NEEDS_FFPROBE
     def test_clearart_on_import_disabled(self):
         file_path = self.create_mediafile_fixture(
             images=["jpg"], target_dir=self.import_path
@@ -331,8 +318,9 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
             importer.run()
 
         item = self.lib.items()[0]
-        assert MediaFile(os.path.join(item.path)).images
+        assert MediaFile(item.filepath).images
 
+    @NEEDS_FFPROBE
     def test_clearart_on_import_enabled(self):
         file_path = self.create_mediafile_fixture(
             images=["jpg"], target_dir=self.import_path
@@ -345,7 +333,7 @@ class TestEmbedartCli(PytestImportHelper, IOMixin, FetchImageHelper):
             importer.run()
 
         item = self.lib.items()[0]
-        assert not MediaFile(os.path.join(item.path)).images
+        assert not MediaFile(item.filepath).images
 
 
 class DummyArtResizer(ArtResizer):

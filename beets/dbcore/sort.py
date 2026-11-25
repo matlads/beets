@@ -1,23 +1,14 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
 """Module for representing sorting criteria for database queries."""
 
 from __future__ import annotations
 
+from functools import reduce
+from operator import or_
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from beets.dbcore.db import AnyModel, Model
 
 
@@ -26,14 +17,19 @@ class Sort:
     the database.
     """
 
+    @property
+    def field_names(self) -> set[str]:
+        """A set with fields in this sort."""
+        return set()
+
     def order_clause(self) -> str | None:
         """Generates a SQL fragment to be used in a ORDER BY clause, or
         None if no fragment is used (i.e., this is a slow sort).
         """
         return None
 
-    def sort(self, items: list[AnyModel]) -> list[AnyModel]:
-        """Sort the list of objects and return a list."""
+    def sort(self, items: Sequence[AnyModel]) -> Sequence[AnyModel]:
+        """Sort the given sequence of model objects."""
         return sorted(items)
 
     def is_slow(self) -> bool:
@@ -45,20 +41,25 @@ class Sort:
     def __hash__(self) -> int:
         return 0
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: object) -> bool:
         return type(self) is type(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
 
 
 class MultipleSort(Sort):
     """Sort that encapsulates multiple sub-sorts."""
 
-    def __init__(self, sorts: list[Sort] | None = None):
+    def __init__(self, sorts: list[Sort] | None = None) -> None:
         self.sorts = sorts or []
 
-    def add_sort(self, sort: Sort):
+    @property
+    def field_names(self) -> set[str]:
+        """A set with fields in this sort."""
+        return reduce(or_, (s.field_names for s in self.sorts), set())
+
+    def add_sort(self, sort: Sort) -> None:
         self.sorts.append(sort)
 
     def order_clause(self) -> str:
@@ -80,12 +81,9 @@ class MultipleSort(Sort):
         return ", ".join(order_strings)
 
     def is_slow(self) -> bool:
-        for sort in self.sorts:
-            if sort.is_slow():
-                return True
-        return False
+        return any(sort.is_slow() for sort in self.sorts)
 
-    def sort(self, items):
+    def sort(self, items: Sequence[AnyModel]) -> Sequence[AnyModel]:
         slow_sorts = []
         switch_slow = False
         for sort in reversed(self.sorts):
@@ -101,14 +99,18 @@ class MultipleSort(Sort):
             items = sort.sort(items)
         return items
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.sorts!r})"
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(tuple(self.sorts))
 
-    def __eq__(self, other):
-        return super().__eq__(other) and self.sorts == other.sorts
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, MultipleSort)
+            and super().__eq__(other)
+            and self.sorts == other.sorts
+        )
 
 
 class FieldSort(Sort):
@@ -117,29 +119,48 @@ class FieldSort(Sort):
     """
 
     def __init__(
-        self, field: str, ascending: bool = True, case_insensitive: bool = True
-    ):
-        self.field = field
+        self,
+        field_name: str,
+        ascending: bool = True,
+        case_insensitive: bool = True,
+    ) -> None:
+        self.table, _, self.field_name = field_name.rpartition(".")
         self.ascending = ascending
         self.case_insensitive = case_insensitive
 
-    def sort(self, objs: list[AnyModel]) -> list[AnyModel]:
-        # TODO: Conversion and null-detection here. In Python 3,
-        # comparisons with None fail. We should also support flexible
-        # attributes with different types without falling over.
+    @property
+    def field(self) -> str:
+        return (
+            f"{self.table}.{self.field_name}" if self.table else self.field_name
+        )
+
+    @property
+    def field_names(self) -> set[str]:
+        """A set with fields in this sort."""
+        return {self.field_name}
+
+    def sort(self, objs: Sequence[AnyModel]) -> Sequence[AnyModel]:
+        # TODO: Support flexible attributes with different types (e.g. a mix
+        # of strings and numbers) without falling over.
 
         def key(obj: Model) -> Any:
-            field_val = obj.get(self.field, None)
+            field_val = obj.get(self.field_name, None)
             if field_val is None:
-                if _type := obj._types.get(self.field):
+                if _type := obj._types.get(self.field_name):
                     # If the field is typed, use its null value.
-                    field_val = obj._types[self.field].null
+                    field_val = obj._types[self.field_name].null
                 else:
                     # If not, fall back to using an empty string.
                     field_val = ""
             if self.case_insensitive and isinstance(field_val, str):
                 field_val = field_val.lower()
-            return field_val
+            # Nullable types (e.g. ``NullInteger``/``NullFloat``) use ``None``
+            # as their null value, so a field may be missing on some objects
+            # and present on others. Comparing ``None`` with a real value
+            # raises a ``TypeError``, so group all missing values together:
+            # this places them first when sorting ascending and last when
+            # descending, matching SQLite's default ordering of NULLs.
+            return (field_val is not None, field_val)
 
         return sorted(objs, key=key, reverse=not self.ascending)
 
@@ -152,9 +173,10 @@ class FieldSort(Sort):
     def __hash__(self) -> int:
         return hash((self.field, self.ascending))
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: object) -> bool:
         return (
-            super().__eq__(other)
+            isinstance(other, FieldSort)
+            and super().__eq__(other)
             and self.field == other.field
             and self.ascending == other.ascending
         )
@@ -189,7 +211,7 @@ class SlowFieldSort(FieldSort):
 class NullSort(Sort):
     """No sorting. Leave results unsorted."""
 
-    def sort(self, items: list[AnyModel]) -> list[AnyModel]:
+    def sort(self, items: Sequence[AnyModel]) -> Sequence[AnyModel]:
         return items
 
     def __nonzero__(self) -> bool:
@@ -198,7 +220,7 @@ class NullSort(Sort):
     def __bool__(self) -> bool:
         return False
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: object) -> bool:
         return type(self) is type(other) or other is None
 
     def __hash__(self) -> int:
@@ -210,16 +232,16 @@ class SmartArtistSort(FieldSort):
     prioritizing the sort field over the raw field.
     """
 
-    def order_clause(self):
+    def order_clause(self) -> str:
         order = "ASC" if self.ascending else "DESC"
         collate = "COLLATE NOCASE" if self.case_insensitive else ""
         field = self.field
 
         return f"COALESCE(NULLIF({field}_sort, ''), {field}) {collate} {order}"
 
-    def sort(self, objs: list[AnyModel]) -> list[AnyModel]:
-        def key(o):
-            val = o[f"{self.field}_sort"] or o[self.field]
+    def sort(self, objs: Sequence[AnyModel]) -> Sequence[AnyModel]:
+        def key(obj: Model) -> str | bytes:
+            val = obj[f"{self.field}_sort"] or obj[self.field]
             return val.lower() if self.case_insensitive else val
 
         return sorted(objs, key=key, reverse=not self.ascending)

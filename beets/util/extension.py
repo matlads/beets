@@ -1,28 +1,20 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """A tool that finds an extension for files without one"""
+
+from __future__ import annotations
 
 import os
 import subprocess
 from logging import Logger
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import mutagen.wave
 
 import beets
 from beets import util
+
+if TYPE_CHECKING:
+    from beets.util import AnyPath
 
 logger = Logger.info
 
@@ -80,7 +72,7 @@ AUDIO_EXTENSIONS = {
 }
 
 
-def fix_extension(path_bytes: PathBytes, logger: Logger | None = None):
+def fix_extension(path_bytes: PathBytes, logger: Logger | None = None) -> bytes:
     """Return the `path` after adding an appropriate extension if needed.
 
     If the file already has an extension, return as-is.
@@ -102,9 +94,8 @@ def fix_extension(path_bytes: PathBytes, logger: Logger | None = None):
             ["ffprobe", "-version"], capture_output=True, shell=shell
         ).stderr.decode("utf-8")
         != ""
-    ):
-        if logger:
-            logger.error("ffprobe needed to determine file extension")
+    ) and logger:
+        logger.error("ffprobe needed to determine file extension")
     output = subprocess.run(
         [
             "ffprobe",
@@ -120,10 +111,11 @@ def fix_extension(path_bytes: PathBytes, logger: Logger | None = None):
     )
     out = output.stdout.decode("utf-8")
     err = output.stderr.decode("utf-8")
-    if err != "":
-        if logger:
-            logger.error("Error with ffprobe\n", err)
-    for line in out.split("\n"):
+    if err != "" and logger:
+        logger.error("Error with ffprobe\n", err)
+    # `splitlines` rather than splitting on "\n": ffprobe terminates its
+    # lines with CRLF on Windows.
+    for line in out.splitlines():
         if line.startswith("format_name="):
             formats = line.split("=")[1].split(",")
     detected_format = ""
@@ -142,16 +134,16 @@ def fix_extension(path_bytes: PathBytes, logger: Logger | None = None):
     new_path = path.with_suffix("." + detected_format)
     if not new_path.exists():
         if beets.config["import"]["fix_ext_inplace"]:
-            util.move(bytes(path), bytes(new_path))
+            util.move(path, new_path)
         else:
-            util.copy(bytes(path), bytes(new_path))
+            util.copy(path, new_path)
     else:
         if logger:
             logger.info("Import file with matching format to original target")
-    return new_path
+    return os.fsencode(new_path)
 
 
-def remux_mpeglayer3_wav(path: util.PathBytes) -> util.PathBytes | None:
+def remux_mpeglayer3_wav(path: AnyPath) -> AnyPath | None:
     """If 'path' is a WAV file containing an MP3 stream
     (WAVE_FORMAT_MPEGLAYER3, wFormatTag = 0x0055), extract the MP3 stream
     to a new .mp3 file and return its path. Returns None if the file is not
@@ -174,9 +166,9 @@ def remux_mpeglayer3_wav(path: util.PathBytes) -> util.PathBytes | None:
     # Skip 'data' marker (4 bytes) and chunk size (4 bytes).
     mp3_data = data[data_offset + 8 :]
 
-    mp3_path = os.path.splitext(path)[0] + b".mp3"
-    with open(util.syspath(mp3_path), "wb") as mp3_file:
-        mp3_file.write(mp3_data)
+    syspath = Path(util.syspath(path))
+    mp3_path = syspath.with_suffix(".mp3")
+    mp3_path.write_bytes(mp3_data)
 
     util.remove(path)
-    return mp3_path
+    return util.as_path_like(mp3_path, like=path)

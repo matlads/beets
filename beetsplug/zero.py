@@ -1,20 +1,9 @@
-# This file is part of beets.
-# Copyright 2016, Blemjhoo Tezoulbr <baobab@heresiarch.info>.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Clears tag fields in media files."""
 
+from __future__ import annotations
+
 import re
+from typing import TYPE_CHECKING
 
 import confuse
 from mediafile import MediaFile
@@ -23,14 +12,45 @@ from beets.importer import Action
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand, input_yn
 
+if TYPE_CHECKING:
+    import optparse
+    from collections.abc import Iterable
+
+    from beets.importer import ImportSession, ImportTask
+    from beets.library import Item, Library
+
+    from ._typing import JSONDict
+
+
 __author__ = "baobab@heresiarch.info"
 
 
 ARTWORK_FIELDS = {"images", "art"}
 
+FIELD_ALIASES: tuple[frozenset[str], ...] = (
+    frozenset(ARTWORK_FIELDS),
+    frozenset({"genre", "genres"}),
+    frozenset({"artist", "artists"}),
+    frozenset({"artist_credit", "artists_credit"}),
+    frozenset({"artist_sort", "artists_sort"}),
+    frozenset({"albumartist", "albumartists"}),
+    frozenset({"albumartist_credit", "albumartists_credit"}),
+    frozenset({"albumartist_sort", "albumartists_sort"}),
+    frozenset({"composer", "composers"}),
+    frozenset({"lyricist", "lyricists"}),
+    frozenset({"arranger", "arrangers"}),
+    frozenset({"albumtype", "albumtypes"}),
+    frozenset({"catalognum", "catalognums"}),
+    frozenset({"language", "languages"}),
+    frozenset({"mb_artistid", "mb_artistids"}),
+    frozenset({"mb_albumartistid", "mb_albumartistids"}),
+)
+
 
 class ZeroPlugin(BeetsPlugin):
-    def __init__(self):
+    fields_to_progs: dict[str, list[re.Pattern[str]]]
+
+    def __init__(self) -> None:
         super().__init__()
 
         self.register_listener("write", self.write_event)
@@ -67,10 +87,11 @@ class ZeroPlugin(BeetsPlugin):
         # Whitelist mode.
         elif self.config["keep_fields"]:
             keep = set(self.config["keep_fields"].as_str_seq())
-            # ensure that all artwork fields are added when at least
-            # one of them is present
-            if keep & ARTWORK_FIELDS:
-                keep.update(ARTWORK_FIELDS)
+            # Ensure paired and aliased fields are kept when any
+            # member of the alias group is specified.
+            for alias_group in FIELD_ALIASES:
+                if keep & alias_group:
+                    keep.update(alias_group)
             for field in MediaFile.fields():
                 if field not in keep and field not in (
                     "id",
@@ -79,21 +100,24 @@ class ZeroPlugin(BeetsPlugin):
                 ):
                     self._set_pattern(field)
 
-    def commands(self):
+    def commands(self) -> list[Subcommand]:
         zero_command = Subcommand("zero", help="set fields to null")
 
-        def zero_fields(lib, opts, args):
+        def zero_fields(
+            lib: Library, opts: optparse.Values, args: list[str]
+        ) -> None:
             if not args and not input_yn(
                 "Remove fields for all items? (Y/n)", True
             ):
                 return
-            for item in lib.items(args):
+            for item in lib.items(args, limit=opts.limit):
                 self.process_item(item)
 
+        zero_command.parser.add_limit_option()
         zero_command.func = zero_fields
         return [zero_command]
 
-    def _set_pattern(self, field):
+    def _set_pattern(self, field: str) -> None:
         """Populate `self.fields_to_progs` for a given field.
         Do some sanity checks then compile the regexes.
         """
@@ -112,17 +136,19 @@ class ZeroPlugin(BeetsPlugin):
                 # Matches everything
                 self.fields_to_progs[field] = []
 
-    def import_task_choice_event(self, session, task):
+    def import_task_choice_event(
+        self, session: ImportSession, task: ImportTask
+    ) -> None:
         if task.choice_flag == Action.ASIS and not self.warned:
             self._log.warning('cannot zero in "as-is" mode')
             self.warned = True
         # TODO request write in as-is mode
 
-    def write_event(self, item, path, tags):
+    def write_event(self, item: Item, path: bytes, tags: JSONDict) -> None:
         if self.config["auto"]:
             self.set_fields(item, tags)
 
-    def set_fields(self, item, tags):
+    def set_fields(self, item: Item, tags: JSONDict) -> bool:
         """Set values in `tags` to `None` if the field is in
         `self.fields_to_progs` and any of the corresponding `progs` matches the
         field value.
@@ -155,7 +181,7 @@ class ZeroPlugin(BeetsPlugin):
 
         return fields_set
 
-    def process_item(self, item):
+    def process_item(self, item: Item) -> None:
         tags = dict(item)
 
         if self.set_fields(item, tags):
@@ -164,13 +190,10 @@ class ZeroPlugin(BeetsPlugin):
                 item.store(fields=tags)
 
 
-def _match_progs(value, progs):
+def _match_progs(value: str, progs: Iterable[re.Pattern[str]]) -> bool:
     """Check if `value` (as string) is matching any of the compiled regexes in
     the `progs` list.
     """
     if not progs:
         return True
-    for prog in progs:
-        if prog.search(str(value)):
-            return True
-    return False
+    return any(prog.search(str(value)) for prog in progs)

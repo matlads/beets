@@ -1,36 +1,45 @@
-# This file is part of beets.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Adds support for ipfs. Requires go-ipfs and a running ipfs daemon"""
+
+from __future__ import annotations
 
 import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Protocol
 
 from beets import config, library, ui, util
 from beets.plugins import BeetsPlugin
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+    from beets.dbcore import Results
+    from beets.importer import ImportSession, ImportTask
+    from beets.library import Album, Library
+
+
+class IPFSCLIOpts(Protocol):
+    _import: bool | None
+    _list: bool | None
+    add: bool | None
+    get: bool | None
+    limit: int | None
+    play: bool | None
+    publish: bool | None
+
 
 class IPFSPlugin(BeetsPlugin):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.config.add({"auto": True, "nocopy": False})
 
         if self.config["auto"]:
             self.import_stages = [self.auto_add]
 
-    def commands(self):
+    def commands(self) -> list[ui.Subcommand]:
         cmd = ui.Subcommand("ipfs", help="interact with ipfs")
         cmd.parser.add_option(
             "-a", "--add", dest="add", action="store_true", help="Add to ipfs"
@@ -67,9 +76,9 @@ class IPFSPlugin(BeetsPlugin):
             help="Play music from remote libraries",
         )
 
-        def func(lib, opts, args):
+        def func(lib: Library, opts: IPFSCLIOpts, args: list[str]) -> None:
             if opts.add:
-                for album in lib.albums(args):
+                for album in lib.albums(args, limit=opts.limit):
                     if len(album.items()) == 0:
                         self._log.info(
                             "{} does not contain items, aborting", album
@@ -88,29 +97,35 @@ class IPFSPlugin(BeetsPlugin):
                 self.ipfs_import(lib, args)
 
             if opts._list:
-                self.ipfs_list(lib, args)
+                self.ipfs_list(lib, args, opts.limit)
 
             if opts.play:
                 self.ipfs_play(lib, opts, args)
 
+        cmd.parser.add_limit_option(flags=("--limit",))
         cmd.func = func
         return [cmd]
 
-    def auto_add(self, session, task):
-        if task.is_album:
-            if self.ipfs_add(task.album):
-                task.album.store()
+    def auto_add(self, session: ImportSession, task: ImportTask) -> None:
+        if task.is_album and self.ipfs_add(task.album):
+            task.album.store()
 
-    def ipfs_play(self, lib, opts, args):
+    def ipfs_play(
+        self, lib: Library, opts: IPFSCLIOpts, args: list[str]
+    ) -> None:
         from beetsplug.play import PlayPlugin
 
-        jlib = self.get_remote_lib(lib)
         player = PlayPlugin()
         config["play"]["relative_to"] = None
-        player.album = True
-        player.play_music(jlib, player, args)
+        limit = opts.limit if opts else None
+        # set opts that `_play_command` expects
+        play_opts = SimpleNamespace(
+            album=True, limit=limit, randomize=None, args=None, yes=None
+        )
+        with self.remote_lib(lib) as jlib:
+            player._play_command(jlib, play_opts, args)
 
-    def ipfs_add(self, album):
+    def ipfs_add(self, album: Album) -> bool:
         try:
             album_dir = album.item_dir()
         except AttributeError:
@@ -126,10 +141,10 @@ class IPFSPlugin(BeetsPlugin):
         self._log.info("Adding {} to ipfs", album_dir)
 
         if self.config["nocopy"]:
-            cmd = "ipfs add --nocopy -q -r".split()
+            cmd = ["ipfs", "add", "--nocopy", "-q", "-r"]
         else:
-            cmd = "ipfs add -q -r".split()
-        cmd.append(album_dir)
+            cmd = ["ipfs", "add", "-q", "-r"]
+        cmd.append(os.fsdecode(album_dir))
         try:
             output = util.command_output(cmd).stdout.split()
         except (OSError, subprocess.CalledProcessError) as exc:
@@ -156,8 +171,8 @@ class IPFSPlugin(BeetsPlugin):
 
         return True
 
-    def ipfs_get(self, lib, query):
-        query = query[0]
+    def ipfs_get(self, lib: Library, queries: Sequence[str]) -> None:
+        query = queries[0]
         # Check if query is a hash
         # TODO: generalize to other hashes; probably use a multihash
         # implementation
@@ -168,9 +183,9 @@ class IPFSPlugin(BeetsPlugin):
             for album in albums:
                 self.ipfs_get_from_hash(lib, album.ipfs)
 
-    def ipfs_get_from_hash(self, lib, _hash):
+    def ipfs_get_from_hash(self, lib: Library, _hash: str) -> bool | None:
         try:
-            cmd = "ipfs get".split()
+            cmd = ["ipfs", "get"]
             cmd.append(_hash)
             util.command_output(cmd)
         except (OSError, subprocess.CalledProcessError) as err:
@@ -184,19 +199,17 @@ class IPFSPlugin(BeetsPlugin):
             lib, loghandler=None, query=None, paths=[_hash]
         )
         imp.run()
-        # This uses a relative path, hence we cannot use util.syspath(_hash,
-        # prefix=True). However, that should be fine since the hash will not
-        # exceed MAX_PATH.
-        shutil.rmtree(util.syspath(_hash, prefix=False))
+        shutil.rmtree(_hash)
+        return None
 
-    def ipfs_publish(self, lib):
+    def ipfs_publish(self, lib: Library) -> bool | None:
         with tempfile.NamedTemporaryFile() as tmp:
             self.ipfs_added_albums(lib, tmp.name)
             try:
                 if self.config["nocopy"]:
-                    cmd = "ipfs add --nocopy -q ".split()
+                    cmd = ["ipfs", "add", "--nocopy", "-q"]
                 else:
-                    cmd = "ipfs add -q ".split()
+                    cmd = ["ipfs", "add", "-q"]
                 cmd.append(tmp.name)
                 output = util.command_output(cmd).stdout
             except (OSError, subprocess.CalledProcessError) as err:
@@ -204,26 +217,26 @@ class IPFSPlugin(BeetsPlugin):
                 self._log.error(msg)
                 return False
             self._log.info("hash of library: {}", output)
+        return None
 
-    def ipfs_import(self, lib, args):
+    def ipfs_import(self, lib: Library, args: Sequence[str]) -> bool | None:
         _hash = args[0]
-        if len(args) > 1:
-            lib_name = args[1]
-        else:
-            lib_name = _hash
-        lib_root = os.path.dirname(lib.path)
-        remote_libs = os.path.join(lib_root, b"remotes")
+        lib_name = args[1] if len(args) > 1 else _hash
+        remote_libs = self._remote_libs_path(lib)
         if not os.path.exists(remote_libs):
             try:
                 os.makedirs(remote_libs)
             except OSError as e:
-                msg = f"Could not create {remote_libs}. Error: {e}"
-                self._log.error(msg)
+                self._log.error(
+                    "Could not create {}. Error: {}",
+                    os.fsdecode(remote_libs),
+                    e,
+                )
                 return False
         path = os.path.join(remote_libs, lib_name.encode() + b".db")
         if not os.path.exists(path):
             cmd = f"ipfs get {_hash} -o".split()
-            cmd.append(path)
+            cmd.append(os.fsdecode(path))
             try:
                 util.command_output(cmd)
             except (OSError, subprocess.CalledProcessError):
@@ -243,17 +256,19 @@ class IPFSPlugin(BeetsPlugin):
                 added_album = jlib.add_album(new_album)
                 added_album.ipfs = album.ipfs
                 added_album.store()
+        return None
 
-    def already_added(self, check, jlib):
-        for jalbum in jlib.albums():
-            if jalbum.mb_albumid == check.mb_albumid:
-                return True
-        return False
+    def already_added(self, check: Album, jlib: Library) -> bool:
+        return any(
+            jalbum.mb_albumid == check.mb_albumid for jalbum in jlib.albums()
+        )
 
-    def ipfs_list(self, lib, args):
+    def ipfs_list(
+        self, lib: Library, args: Sequence[str], limit: int | None = None
+    ) -> None:
         fmt = config["format_album"].get()
         try:
-            albums = self.query(lib, args)
+            albums = self.query(lib, args, limit=limit)
         except OSError:
             ui.print_("No imported libraries yet.")
             return
@@ -261,20 +276,31 @@ class IPFSPlugin(BeetsPlugin):
         for album in albums:
             ui.print_(format(album, fmt), " : ", album.ipfs.decode())
 
-    def query(self, lib, args):
-        rlib = self.get_remote_lib(lib)
-        albums = rlib.albums(args)
-        return albums
+    def query(
+        self, lib: Library, args: str | Sequence[str], limit: int | None = None
+    ) -> Results[Album]:
+        with self.remote_lib(lib) as rlib:
+            return rlib.albums(args, limit=limit)
 
-    def get_remote_lib(self, lib):
-        lib_root = os.path.dirname(lib.path)
-        remote_libs = os.path.join(lib_root, b"remotes")
+    def _remote_libs_path(self, lib: Library) -> bytes:
+        lib_root = os.path.dirname(os.fsencode(lib.path))
+        return os.path.join(lib_root, b"remotes")
+
+    @contextmanager
+    def remote_lib(self, lib: Library) -> Iterator[Library]:
+        remote_libs = self._remote_libs_path(lib)
         path = os.path.join(remote_libs, b"joined.db")
         if not os.path.isfile(path):
             raise OSError
-        return library.Library(path)
 
-    def ipfs_added_albums(self, rlib, tmpname):
+        remote_lib = library.Library(path)
+
+        try:
+            yield remote_lib
+        finally:
+            remote_lib._close()
+
+    def ipfs_added_albums(self, rlib: Library, tmpname: str) -> Library:
         """Returns a new library with only albums/items added to ipfs"""
         tmplib = library.Library(
             tmpname, directory="/ipfs/", set_music_dir=False
@@ -288,7 +314,7 @@ class IPFSPlugin(BeetsPlugin):
                     pass
         return tmplib
 
-    def create_new_album(self, album, tmplib):
+    def create_new_album(self, album: Album, tmplib: Library) -> bool | None:
         items = []
         for item in album.items():
             try:
@@ -298,7 +324,7 @@ class IPFSPlugin(BeetsPlugin):
                 pass
             item_path = os.fsdecode(os.path.basename(item.path))
             # Clear current path from item
-            item.path = f"{album.ipfs}/{item_path}"
+            item.path = os.fsencode(f"{album.ipfs}/{item_path}")
 
             item.id = None
             items.append(item)
@@ -308,3 +334,4 @@ class IPFSPlugin(BeetsPlugin):
         new_album = tmplib.add_album(items)
         new_album.ipfs = album.ipfs
         new_album.store(inherit=False)
+        return None

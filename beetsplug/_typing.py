@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NotRequired
 
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 JSONDict = dict[str, Any]
 
@@ -18,7 +18,8 @@ class LRCLibAPI:
         albumName: str
         duration: float | None
         instrumental: bool
-        plainLyrics: str
+        # Both lyrics fields may be null, even when 'instrumental' is False.
+        plainLyrics: str | None
         syncedLyrics: str | None
 
 

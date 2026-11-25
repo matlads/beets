@@ -1,21 +1,8 @@
-# This file is part of beets.
-# Copyright 2025, Sarunas Nejus, Henry Oberholtzer.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Dataclasses for managing artist credits and tracklists from Discogs."""
 
 from __future__ import annotations
 
+import contextlib
 import re
 from dataclasses import asdict, dataclass, field
 from functools import cached_property
@@ -29,7 +16,7 @@ from .types import ArtistInfo
 if TYPE_CHECKING:
     from confuse import ConfigView
 
-    from beets.autotag.hooks import TrackInfo
+    from beets.autotag import TrackInfo
 
     from . import DiscogsPlugin
     from .types import Artist, Track, TracklistInfo
@@ -250,7 +237,7 @@ class TracklistState:
     ) -> TracklistState:
         state = cls()
         for track in clean_tracklist:
-            if track["position"]:
+            if track["type_"] == "track":
                 state.index += 1
                 if state.next_divisions:
                     state.divisions += state.next_divisions
@@ -264,9 +251,7 @@ class TracklistState:
                 state.medium_indices.append(medium_index or None)
             else:
                 state.next_divisions.append(track["title"])
-                try:
+                with contextlib.suppress(IndexError):
                     state.divisions.pop()
-                except IndexError:
-                    pass
                 state.index_tracks[state.index + 1] = track["title"]
         return state

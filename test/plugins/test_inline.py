@@ -1,27 +1,15 @@
-# This file is part of beets.
-# Copyright 2025, Gabe Push.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
+from typing import ClassVar
 
-from beets import config, plugins
-from beets.test.helper import PluginTestCase
+from beets import plugins
+from beets.test.helper import PluginTestHelper
 from beetsplug.inline import InlinePlugin
 
 
-class TestInlineRecursion(PluginTestCase):
-    def test_no_recursion_when_inline_shadows_fixed_field(self):
-        config["plugins"] = ["inline"]
+class TestInlineRecursion(PluginTestHelper):
+    plugin: ClassVar[str] = "inline"
 
-        config["item_fields"] = {
+    def test_no_recursion_when_inline_shadows_fixed_field(self):
+        self.config["item_fields"] = {
             "track_no": (
                 "f'{disc:02d}-{track:02d}' if disctotal > 1 else f'{track:02d}'"
             )
@@ -80,9 +68,8 @@ class TestInlineRecursion(PluginTestCase):
         assert func(item) == 4
 
     def test_inline_obj_missing(self):
-        config["plugins"] = ["inline", "missing"]
-
-        config["album_fields"] = {"has_missing": ("bool(db_obj.missing)")}
+        self.config["plugins"] = ["inline", "missing"]
+        self.config["album_fields"] = {"has_missing": ("bool(db_obj.missing)")}
 
         plugins._instances.clear()
         plugins.load_plugins()

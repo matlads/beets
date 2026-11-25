@@ -1,58 +1,12 @@
-# This file is part of beets.
-# Copyright 2025, Henry Oberholtzer
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for the 'titlecase' plugin"""
 
 from unittest.mock import patch
 
-from beets.autotag.hooks import AlbumInfo, TrackInfo
+from beets.autotag import AlbumInfo, TrackInfo
 from beets.importer import ImportSession, ImportTask
 from beets.library import Item
 from beets.test.helper import PluginTestCase
 from beetsplug.titlecase import TitlecasePlugin
-
-titlecase_fields_testcases = [
-    (
-        {
-            "fields": [
-                "artist",
-                "albumartist",
-                "title",
-                "album",
-                "mb_albumd",
-                "year",
-            ],
-            "force_lowercase": True,
-        },
-        Item(
-            artist="OPHIDIAN",
-            albumartist="ophiDIAN",
-            format="CD",
-            year=2003,
-            album="BLACKBOX",
-            title="KhAmElEoN",
-        ),
-        Item(
-            artist="Ophidian",
-            albumartist="Ophidian",
-            format="CD",
-            year=2003,
-            album="Blackbox",
-            title="Khameleon",
-        ),
-    )
-]
 
 
 class TestTitlecasePlugin(PluginTestCase):
@@ -67,6 +21,11 @@ class TestTitlecasePlugin(PluginTestCase):
             assert len(TitlecasePlugin().import_stages) == 0
         with self.configure_plugin({"auto": False, "after_choice": True}):
             assert len(TitlecasePlugin().import_stages) == 0
+
+    def test_commands_can_be_requested_twice(self):
+        """``beet completion`` asks every plugin for its commands again."""
+        plugin = TitlecasePlugin()
+        assert plugin.commands() == plugin.commands()
 
     def test_basic_titlecase(self):
         """Check that default behavior is as expected."""
@@ -131,6 +90,25 @@ class TestTitlecasePlugin(PluginTestCase):
         for testcase in testcases:
             separators, given, expected = testcase
             with self.configure_plugin({"separators": separators}):
+                assert TitlecasePlugin().titlecase(given) == expected
+
+    def test_separators_with_length_changing_replace(self):
+        testcases = [
+            (
+                [("…", "...")],
+                "What Goes Around…/…Comes Around (Interlude)",
+                "What Goes Around.../...Comes Around (Interlude)",
+            ),
+            (
+                [("...", "…")],
+                "What Goes Around.../...Comes Around (Interlude)",
+                "What Goes Around…/…Comes Around (Interlude)",
+            ),
+        ]
+        for replace, given, expected in testcases:
+            with self.configure_plugin(
+                {"separators": ["/"], "replace": replace}
+            ):
                 assert TitlecasePlugin().titlecase(given) == expected
 
     def test_all_caps(self):

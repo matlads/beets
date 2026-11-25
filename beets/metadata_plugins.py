@@ -21,6 +21,7 @@ from typing import (
     TypeVar,
 )
 
+import requests
 import unidecode
 from confuse import NotFoundError
 
@@ -36,7 +37,8 @@ QueryType = Literal["album", "track"]
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
 
-    from .autotag.hooks import AlbumInfo, Item, TrackInfo
+    from .autotag import AlbumInfo, TrackInfo
+    from .library.models import Item
 
 # Global logger.
 log = logging.getLogger("beets")
@@ -59,7 +61,9 @@ def get_metadata_source(name: str) -> MetadataSourcePlugin | None:
 
 
 @contextmanager
-def maybe_handle_plugin_error(plugin: MetadataSourcePlugin, method_name: str):
+def maybe_handle_plugin_error(
+    plugin: MetadataSourcePlugin, method_name: str
+) -> Iterator[None]:
     """Safely call a plugin method, catching and logging exceptions."""
     if config["raise_on_error"]:
         yield
@@ -255,7 +259,7 @@ class MetadataSourcePlugin(BeetsPlugin, metaclass=abc.ABCMeta):
         single calls to album_for_id.
         """
 
-        return (self.album_for_id(id) for id in ids)
+        return (self.album_for_id(id_) for id_ in ids)
 
     def tracks_for_ids(self, ids: Iterable[str]) -> Iterable[TrackInfo | None]:
         """Batch lookup of track metadata for a list of track IDs.
@@ -266,7 +270,7 @@ class MetadataSourcePlugin(BeetsPlugin, metaclass=abc.ABCMeta):
         single calls to track_for_id.
         """
 
-        return (self.track_for_id(id) for id in ids)
+        return (self.track_for_id(id_) for id_ in ids)
 
     def _extract_id(self, url: str) -> str | None:
         """Extract an ID from a URL for this metadata source plugin.
@@ -411,12 +415,22 @@ class SearchApiMetadataSourcePlugin(
         if self.config["search_query_ascii"].get():
             query = unidecode.unidecode(query)
 
+        if not query and not filters:
+            self._log.debug("Skipping search with empty query and filters")
+            return ()
+
         limit = self.config["search_limit"].get(int)
         params = SearchParams(query_type, query, filters, limit)
 
         self._log.debug("Searching for '{}' with {}", query, filters)
         try:
             response_data = self.get_search_response(params)
+        except requests.exceptions.RequestException as e:
+            if config["raise_on_error"].get(bool):
+                raise
+            self._log.error("Error searching {.data_source}: {}", self, e)
+            self._log.debug("Search request failed", exc_info=True)
+            return ()
         except Exception as e:
             if config["raise_on_error"].get(bool):
                 raise

@@ -1,22 +1,12 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Allows beets to embed album art into file metadata."""
 
-import os.path
+from __future__ import annotations
+
+import os
 import tempfile
 from mimetypes import guess_extension
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import requests
 
@@ -24,12 +14,37 @@ from beets import config, ui
 from beets.exceptions import UserError
 from beets.plugins import BeetsPlugin
 from beets.ui import print_
-from beets.util import bytestring_path, displayable_path, normpath, syspath
+from beets.util import normpath, syspath
 from beets.util.artresizer import ArtResizer
 from beetsplug._utils import art
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
-def _confirm(objs, album):
+    from beets.importer import ImportSession, ImportTask
+    from beets.library import Album, LibModel, Library
+
+
+class EmbedArtCLIOpts(Protocol):
+    file: str | None
+    limit: int | None
+    url: str | None
+    yes: bool | None
+
+
+class ExtractArtCLIOpts(Protocol):
+    associate: bool | None
+    filename: str | None
+    limit: int | None
+    outpath: str | None
+
+
+class ClearArtCLIOpts(Protocol):
+    limit: int | None
+    yes: bool | None
+
+
+def _confirm(objs: Sequence[LibModel], album: bool) -> bool:
     """Show the list of affected objects (items or albums) and confirm
     that the user wants to modify their artwork.
 
@@ -53,7 +68,7 @@ def _confirm(objs, album):
 class EmbedCoverArtPlugin(BeetsPlugin):
     """Allows albumart to be embedded into the actual files."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.config.add(
             {
@@ -87,7 +102,7 @@ class EmbedCoverArtPlugin(BeetsPlugin):
         if self.config["clearart_on_import"].get(bool):
             self.register_listener("import_task_files", self.import_task_files)
 
-    def commands(self):
+    def commands(self) -> list[ui.Subcommand]:
         # Embed command.
         embed_cmd = ui.Subcommand(
             "embedart", help="embed image files into file metadata"
@@ -112,15 +127,15 @@ class EmbedCoverArtPlugin(BeetsPlugin):
         compare_threshold = self.config["compare_threshold"].get(int)
         ifempty = self.config["ifempty"].get(bool)
 
-        def embed_func(lib, opts, args):
+        def embed_func(
+            lib: Library, opts: EmbedArtCLIOpts, args: list[str]
+        ) -> None:
             if opts.file:
-                imagepath = normpath(opts.file)
-                if not os.path.isfile(syspath(imagepath)):
-                    raise UserError(
-                        f"image file {displayable_path(imagepath)} not found"
-                    )
+                imagepath = normpath(Path(opts.file))
+                if not imagepath.is_file():
+                    raise UserError(f"image file {imagepath} not found")
 
-                items = lib.items(args)
+                items = lib.items(args, limit=opts.limit)
 
                 # Confirm with user.
                 if not opts.yes and not _confirm(items, not opts.file):
@@ -149,17 +164,17 @@ class EmbedCoverArtPlugin(BeetsPlugin):
                     self._log.error("Invalid image file")
                     return
                 file = f"image{extension}"
-                tempimg = os.path.join(tempfile.gettempdir(), file)
+                tempimg = Path(tempfile.gettempdir()) / file
                 try:
-                    with open(tempimg, "wb") as f:
+                    with tempimg.open("wb") as f:
                         f.write(response.content)
                 except Exception as e:
                     self._log.error("Unable to save image: {}", e)
                     return
-                items = lib.items(args)
+                items = lib.items(args, limit=opts.limit)
                 # Confirm with user.
                 if not opts.yes and not _confirm(items, not opts.url):
-                    os.remove(tempimg)
+                    tempimg.unlink()
                     return
                 for item in items:
                     art.embed_item(
@@ -172,9 +187,9 @@ class EmbedCoverArtPlugin(BeetsPlugin):
                         ifempty,
                         quality=quality,
                     )
-                os.remove(tempimg)
+                tempimg.unlink()
             else:
-                albums = lib.albums(args)
+                albums = lib.albums(args, limit=opts.limit)
                 # Confirm with user.
                 if not opts.yes and not _confirm(albums, not opts.file):
                     return
@@ -190,6 +205,7 @@ class EmbedCoverArtPlugin(BeetsPlugin):
                     )
                     self.remove_artfile(album)
 
+        embed_cmd.parser.add_limit_option()
         embed_cmd.func = embed_func
 
         # Extract command.
@@ -211,29 +227,32 @@ class EmbedCoverArtPlugin(BeetsPlugin):
             help="associate the extracted images with the album",
         )
 
-        def extract_func(lib, opts, args):
+        def extract_func(
+            lib: Library, opts: ExtractArtCLIOpts, args: list[str]
+        ) -> None:
             if opts.outpath:
                 art.extract_first(
-                    self._log, normpath(opts.outpath), lib.items(args)
+                    self._log,
+                    normpath(Path(opts.outpath)),
+                    lib.items(args, limit=opts.limit),
                 )
             else:
-                filename = bytestring_path(
-                    opts.filename or config["art_filename"].get()
-                )
-                if os.path.dirname(filename) != b"":
+                filename = Path(opts.filename or config["art_filename"].get())
+                if filename.parent != Path():
                     self._log.error(
                         "Only specify a name rather than a path for -n"
                     )
                     return
-                for album in lib.albums(args):
-                    artpath = normpath(os.path.join(album.path, filename))
-                    artpath = art.extract_first(
-                        self._log, artpath, album.items()
-                    )
-                    if artpath and opts.associate:
+                for album in lib.albums(args, limit=opts.limit):
+                    if opts.associate and (
+                        artpath := art.extract_first(
+                            self._log, album.filepath / filename, album.items()
+                        )
+                    ):
                         album.set_art(artpath)
                         album.store()
 
+        extract_cmd.parser.add_limit_option()
         extract_cmd.func = extract_func
 
         # Clear command.
@@ -244,18 +263,21 @@ class EmbedCoverArtPlugin(BeetsPlugin):
             "-y", "--yes", action="store_true", help="skip confirmation"
         )
 
-        def clear_func(lib, opts, args):
-            items = lib.items(args)
+        def clear_func(
+            lib: Library, opts: ClearArtCLIOpts, args: list[str]
+        ) -> None:
+            items = lib.items(args, limit=opts.limit)
             # Confirm with user.
             if not opts.yes and not _confirm(items, False):
                 return
-            art.clear(self._log, lib, args)
+            art.clear(self._log, lib, args, opts.limit)
 
+        clear_cmd.parser.add_limit_option()
         clear_cmd.func = clear_func
 
         return [embed_cmd, extract_cmd, clear_cmd]
 
-    def process_album(self, album):
+    def process_album(self, album: Album) -> None:
         """Automatically embed art after art has been set"""
         if self.config["auto"] and ui.should_write():
             max_width = self.config["maxwidth"].get(int)
@@ -269,18 +291,23 @@ class EmbedCoverArtPlugin(BeetsPlugin):
             )
             self.remove_artfile(album)
 
-    def remove_artfile(self, album):
+    def remove_artfile(self, album: Album) -> None:
         """Possibly delete the album art file for an album (if the
         appropriate configuration option is enabled).
         """
-        if self.config["remove_art_file"] and album.artpath:
-            if os.path.isfile(syspath(album.artpath)):
-                self._log.debug("Removing album art file for {}", album)
-                os.remove(syspath(album.artpath))
-                album.artpath = None
-                album.store()
+        if (
+            self.config["remove_art_file"]
+            and album.artpath
+            and os.path.isfile(syspath(album.artpath))
+        ):
+            self._log.debug("Removing album art file for {}", album)
+            os.remove(syspath(album.artpath))
+            album.artpath = None
+            album.store()
 
-    def import_task_files(self, session, task):
+    def import_task_files(
+        self, session: ImportSession, task: ImportTask
+    ) -> None:
         """Automatically clearart of imported files."""
         for item in task.imported_items():
             self._log.debug("clearart-on-import {.filepath}", item)

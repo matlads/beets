@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Various tests for querying the library database."""
 
 import logging
@@ -23,17 +9,15 @@ from pathlib import Path
 import pytest
 
 from beets import util
-from beets.dbcore import types
+from beets.dbcore import AndQuery, MatchQuery, OrQuery, types
 from beets.dbcore.query import (
-    AndQuery,
     BooleanQuery,
     DateQuery,
     FalseQuery,
-    MatchQuery,
+    InQuery,
     NoneQuery,
     NotQuery,
     NumericQuery,
-    OrQuery,
     ParsingError,
     PathQuery,
     RegexpQuery,
@@ -54,18 +38,19 @@ _p = pytest.param
 
 
 @pytest.fixture(scope="class")
-def helper():
-    helper = TestHelper()
-    helper.setup_beets()
+def helper(class_helper):
+    """Use class scope because each query class owns a library shape.
 
-    yield helper
-
-    helper.teardown_beets()
+    Class fixtures add rows, albums, flex types, paths, or media files and then
+    query whole collections, so sibling class data would change expectations.
+    """
+    return class_helper
 
 
 class TestGet:
     @pytest.fixture(scope="class")
-    def lib(self, helper):
+    @classmethod
+    def lib(cls, helper):
         album_items = [
             helper.create_item(
                 title="first",
@@ -100,6 +85,7 @@ class TestGet:
             comp=False,
             genres=["Hard Rock"],
             comments="caf\xe9",
+            Flex_Attr="flex",
         )
 
         return helper.lib
@@ -129,6 +115,8 @@ class TestGet:
             ("comments:caf\xe9", ["third"]),
             ("comp:true", ["first", "second"]),
             ("comp:false", ["third"]),
+            ("flex_attr:flex", ["third"]),
+            ("Flex_Attr:flex", ["third"]),
             ("genres:=rock", ["first"]),
             ("genres:=Rock", ["second"]),
             ('genres:="Hard Rock"', ["third"]),
@@ -271,7 +259,8 @@ class TestGet:
 
 class TestMatch:
     @pytest.fixture(scope="class")
-    def item(self):
+    @classmethod
+    def item(cls):
         return _common.item(
             album="the album",
             disc=6,
@@ -305,7 +294,7 @@ class TestMatch:
     )
     def test_match(self, item, q, should_match):
         assert q.match(item) == should_match
-        assert not NotQuery(q).match(item) == should_match
+        assert NotQuery(q).match(item) != should_match
 
 
 class TestPathQuery:
@@ -315,6 +304,12 @@ class TestPathQuery:
     handling special characters, case sensitivity, parent directories,
     and path separator detection across different platforms.
     """
+
+    @pytest.fixture
+    def helper(self):
+        """Isolate rows added by individual path query tests."""
+        with TestHelper() as helper:
+            yield helper
 
     @staticmethod
     def abs_query_path(path: str, trailing_sep: bool = False) -> str:
@@ -333,7 +328,7 @@ class TestPathQuery:
             path = os.path.join(path, "")
         return path.replace("\\", "\\\\")
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def lib(self, helper):
         helper.add_item(path=b"/aaa/bb/c.mp3", title="path item")
         helper.add_item(path=b"/x/y/z.mp3", title="another item")
@@ -460,9 +455,10 @@ class TestQuery:
     SINGLE = "singleton"
 
     @pytest.fixture(scope="class")
-    def lib(self, helper):
+    @classmethod
+    def lib(cls, helper):
         helper.add_album(
-            title=self.ALBUM,
+            title=cls.ALBUM,
             comp=True,
             flexbool=True,
             bpm=120,
@@ -470,7 +466,7 @@ class TestQuery:
             rg_track_gain=0,
         )
         helper.add_item(
-            title=self.SINGLE, comp=False, flexbool=False, rg_track_gain=None
+            title=cls.SINGLE, comp=False, flexbool=False, rg_track_gain=None
         )
 
         with pytest.MonkeyPatch.context() as monkeypatch:
@@ -484,6 +480,12 @@ class TestQuery:
     @pytest.mark.parametrize("query_class", [MatchQuery, StringFieldQuery])
     def test_equality(self, query_class):
         assert query_class("foo", "bar") == query_class("foo", "bar")
+
+    def test_in_query_hashable(self):
+        # smartplaylist puts queries in a set; an InQuery whose pattern is a
+        # list used to raise `unhashable type: 'list'`. See #5354.
+        query = InQuery("field", [1, 2, 3])
+        assert query in {query}
 
     @pytest.mark.parametrize(
         "make_q, expected_msg",
@@ -524,7 +526,8 @@ class TestQuery:
 
 class TestDefaultSearchFields:
     @pytest.fixture(scope="class")
-    def lib(self, helper):
+    @classmethod
+    def lib(cls, helper):
         helper.add_album(
             title="title",
             album="album",
@@ -553,7 +556,8 @@ class TestRelatedQueries:
     """Test album-level queries with track-level filters and vice-versa."""
 
     @pytest.fixture(scope="class")
-    def lib(self, helper):
+    @classmethod
+    def lib(cls, helper):
         for album_idx in range(1, 3):
             album_name = f"Album{album_idx}"
             items = [
@@ -607,7 +611,8 @@ class TestHasCoverArtQuery:
     """Test has_cover_art computed field for detecting embedded cover art."""
 
     @pytest.fixture(scope="class")
-    def lib(self, helper):
+    @classmethod
+    def lib(cls, helper):
         item_with = helper.add_item_fixture()
         item_with.title = "with_art"
 

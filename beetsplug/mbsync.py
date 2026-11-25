@@ -1,37 +1,38 @@
-# This file is part of beets.
-# Copyright 2016, Jakob Schnitzer.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Synchronise library metadata with metadata source backends."""
 
-from collections import defaultdict
+from __future__ import annotations
 
-from beets import library, metadata_plugins, ui, util
-from beets.autotag.distance import Distance
-from beets.autotag.hooks import AlbumMatch, TrackMatch
+from collections import defaultdict
+from typing import TYPE_CHECKING, Protocol
+
+from beets import library, metadata_plugins, ui
+from beets.autotag import AlbumMatch, Distance, TrackMatch
 from beets.plugins import BeetsPlugin, apply_item_changes
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from beets.library import Library
+
+
+class MBSyncCLIOpts(Protocol):
+    limit: int | None
+    move: bool | None
+    pretend: bool
+    write: bool | None
 
 
 class MBSyncPlugin(BeetsPlugin):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-    def commands(self):
+    def commands(self) -> list[ui.Subcommand]:
         cmd = ui.Subcommand("mbsync", help="update metadata from musicbrainz")
         cmd.parser.add_option(
             "-p",
             "--pretend",
             action="store_true",
+            default=False,
             help="show all changes but do nothing",
         )
         cmd.parser.add_option(
@@ -57,23 +58,32 @@ class MBSyncPlugin(BeetsPlugin):
             help="don't write updated metadata to files",
         )
         cmd.parser.add_format_option()
+        cmd.parser.add_limit_option()
         cmd.func = self.func
         return [cmd]
 
-    def func(self, lib, opts, args):
+    def func(self, lib: Library, opts: MBSyncCLIOpts, args: list[str]) -> None:
         """Command handler for the mbsync function."""
         move = ui.should_move(opts.move)
         pretend = opts.pretend
         write = ui.should_write(opts.write)
 
-        self.singletons(lib, args, move, pretend, write)
-        self.albums(lib, args, move, pretend, write)
+        self.singletons(lib, args, move, pretend, write, opts.limit)
+        self.albums(lib, args, move, pretend, write, opts.limit)
 
-    def singletons(self, lib, query, move, pretend, write):
+    def singletons(
+        self,
+        lib: Library,
+        query: Sequence[str],
+        move: bool,
+        pretend: bool,
+        write: bool,
+        limit: int | None,
+    ) -> None:
         """Retrieve and apply info from the autotagger for items matched by
         query.
         """
-        for item in lib.items([*query, "singleton:true"]):
+        for item in lib.items([*query, "singleton:true"], limit=limit):
             if not (track_id := item.mb_trackid):
                 self._log.info(
                     "Skipping singleton with no mb_trackid: {}", item
@@ -97,12 +107,20 @@ class MBSyncPlugin(BeetsPlugin):
                 )
                 apply_item_changes(lib, item, move, pretend, write)
 
-    def albums(self, lib, query, move, pretend, write):
+    def albums(
+        self,
+        lib: Library,
+        query: Sequence[str],
+        move: bool,
+        pretend: bool,
+        write: bool,
+        limit: int | None,
+    ) -> None:
         """Retrieve and apply info from the autotagger for albums matched by
         query and their items.
         """
         # Process matching albums.
-        for album in lib.albums(query):
+        for album in lib.albums(query, limit=limit):
             if not (album_id := album.mb_albumid):
                 self._log.info("Skipping album with no mb_albumid: {}", album)
                 continue
@@ -184,6 +202,6 @@ class MBSyncPlugin(BeetsPlugin):
                     album.store()
 
                     # Move album art (and any inconsistent items).
-                    if move and lib.directory in util.ancestry(items[0].path):
+                    if move and lib.contains(items[0]):
                         self._log.debug("moving album {}", album)
                         album.move()

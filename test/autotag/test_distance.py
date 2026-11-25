@@ -2,13 +2,15 @@ import re
 
 import pytest
 
-from beets.autotag.distance import (
+from beets.autotag import (
+    AlbumInfo,
     Distance,
+    Source,
+    TrackInfo,
     distance,
     string_dist,
     track_distance,
 )
-from beets.autotag.hooks import AlbumInfo, TrackInfo
 from beets.library import Item
 from beets.metadata_plugins import MetadataSourcePlugin, get_penalty
 from beets.plugins import BeetsPlugin
@@ -17,7 +19,7 @@ _p = pytest.param
 
 
 class TestDistance:
-    @pytest.fixture(autouse=True, scope="class")
+    @pytest.fixture(autouse=True)
     def setup_config(self, config):
         config["match"]["distance_weights"]["data_source"] = 2.0
         config["match"]["distance_weights"]["album"] = 4.0
@@ -150,7 +152,8 @@ class TestDistance:
 
 class TestTrackDistance:
     @pytest.fixture(scope="class")
-    def info(self):
+    @classmethod
+    def info(cls):
         return TrackInfo(title="title", artist="artist")
 
     @pytest.mark.parametrize(
@@ -168,10 +171,51 @@ class TestTrackDistance:
         dist = track_distance(item, info, incl_artist=True)
         assert bool(dist) == expected_penalty, dist._penalties
 
+    @pytest.mark.parametrize(
+        "item_id, info_id, expected_penalty",
+        [
+            _p("rt-1", "rt-1", False, id="same"),
+            _p("rt-1", "rt-2", True, id="different"),
+            _p("", "rt-1", False, id="item-without-id"),
+            _p("rt-1", None, False, id="info-without-id"),
+        ],
+    )
+    def test_release_track_id(self, item_id, info_id, expected_penalty):
+        item = Item(title="title", mb_releasetrackid=item_id)
+        info = TrackInfo(title="title", release_track_id=info_id)
+
+        dist = track_distance(item, info)
+        assert bool(dist) == expected_penalty, dist._penalties
+
+    def test_release_track_id_of_other_source(self):
+        # A source without release track IDs stores its track ID as the
+        # item's release track ID.
+        other = TrackInfo(
+            title="title", track_id="other-1", data_source="Other"
+        )
+        item = Item(**other.item_data)
+        assert item.mb_releasetrackid == "other-1"
+
+        # Reimporting from that source: its tracks have no release track ID,
+        # so only the recording ID is compared, and it matches.
+        dist = track_distance(item, other)
+        assert dist._penalties["track_id"] == [0.0], dist._penalties
+
+        # A MusicBrainz track's release track ID differs, which is penalized.
+        musicbrainz = TrackInfo(
+            title="title",
+            track_id="recording-1",
+            release_track_id="release-track-1",
+            data_source="MusicBrainz",
+        )
+        dist = track_distance(item, musicbrainz)
+        assert dist._penalties["track_id"] == [1.0, 1.0], dist._penalties
+
 
 class TestAlbumDistance:
     @pytest.fixture(scope="class")
-    def items(self):
+    @classmethod
+    def items(cls):
         return [
             Item(
                 title=title,
@@ -186,7 +230,12 @@ class TestAlbumDistance:
     @pytest.fixture
     def get_dist(self, items):
         def inner(info: AlbumInfo):
-            return distance(items, info, list(zip(items, info.tracks)))
+            return distance(
+                Source.from_items(items).data,
+                info,
+                list(zip(items, info.tracks)),
+                len(items) - len(info.tracks),
+            )
 
         return inner
 
@@ -280,6 +329,23 @@ class TestStringDistance:
 
     def test_different_distance(self):
         assert string_dist("Some String", "Totally Different") != 0.0
+
+    @pytest.mark.parametrize(
+        "string1, string2",
+        [
+            ("Draft Beer", "Draft Whiskey"),
+            ("Left Field", "Left Symphony"),
+            ("Gift Ideas", "Gift Cards"),
+            ("Craft Beer", "Craft Wine"),
+        ],
+    )
+    def test_featuring_pattern_does_not_match_mid_word(self, string1, string2):
+        # The "featuring"/"feat"/"ft" pattern must not match "ft" embedded
+        # inside an ordinary word (draft, left, gift, craft, ...) -- doing so
+        # would treat everything after "ft" as a low-weight suffix and make
+        # genuinely different strings look almost identical instead of
+        # correctly registering as a large distance.
+        assert string_dist(string1, string2) > 0.3
 
     @pytest.mark.parametrize(
         "string1, string2, reference",

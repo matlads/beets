@@ -1,18 +1,34 @@
 """The 'stats' command: show library statistics."""
 
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING, Protocol
 
 from beets import logging, ui
 from beets.util import syspath
 from beets.util.units import human_bytes, human_seconds
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from beets.library import Library
+
+
 # Global logger.
 log = logging.getLogger("beets")
 
 
-def show_stats(lib, query, exact):
+class StatsCLIOpts(Protocol):
+    exact: bool
+    limit: int | None
+
+
+def show_stats(
+    lib: Library, query: Sequence[str], exact: bool, limit: int | None
+) -> None:
     """Shows some statistics about the matched items."""
-    items = lib.items(query)
+    items = lib.items(query, limit=limit)
 
     total_size = 0
     total_time = 0.0
@@ -49,14 +65,19 @@ Albums: {len(albums)}
 Album artists: {len(album_artists)}""")
 
 
-def stats_func(lib, opts, args):
-    show_stats(lib, args, opts.exact)
+def stats_func(lib: Library, opts: StatsCLIOpts, args: list[str]) -> None:
+    show_stats(lib, args, opts.exact, opts.limit)
 
 
 stats_cmd = ui.Subcommand(
     "stats", help="show statistics about the library or a query"
 )
 stats_cmd.parser.add_option(
-    "-e", "--exact", action="store_true", help="exact size and time"
+    "-e",
+    "--exact",
+    action="store_true",
+    default=False,
+    help="exact size and time",
 )
+stats_cmd.parser.add_limit_option()
 stats_cmd.func = stats_func

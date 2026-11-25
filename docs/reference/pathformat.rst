@@ -179,6 +179,19 @@ It has the same arguments as the :ref:`%aunique <aunique>` template, but the
 default values are different. The default identifiers are ``artist title`` and
 the default disambiguators are ``year trackdisambig``.
 
+.. _tunique:
+
+Track Disambiguation
+--------------------
+
+Some tracks on the same album might share the same title (e.g., identical-titled
+tracks on different discs). Beets provides the ``%tunique{}`` template to avoid
+giving these tracks the same file path.
+
+It has the same arguments as the :ref:`%aunique <aunique>` template, but the
+default values are different. The default identifiers are ``title`` and the
+default disambiguators are ``disc track artist``.
+
 Syntax Details
 --------------
 
@@ -317,6 +330,8 @@ constructs include:
   it belongs to.
 - ``%the{text}`` by :doc:`/plugins/the`: Moves English articles to ends of
   strings.
+- ``%titlecase{text}`` by :doc:`/plugins/titlecase`: Format text according to
+  title case guidelines.
 
 The :doc:`/plugins/inline` lets you define template fields in your beets
 configuration file using Python snippets. And for more advanced processing, you

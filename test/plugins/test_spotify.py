@@ -1,7 +1,6 @@
 """Tests for the 'spotify' plugin"""
 
 import json
-import os
 from urllib.parse import parse_qs, urlparse
 
 import responses
@@ -26,6 +25,7 @@ def _params(url):
 
 class SpotifyPluginTest(PluginTestCase):
     plugin = "spotify"
+    db_on_disk = True
 
     @responses.activate
     def setUp(self):
@@ -57,11 +57,8 @@ class SpotifyPluginTest(PluginTestCase):
 
     @responses.activate
     def test_missing_request(self):
-        json_file = os.path.join(
-            _common.RSRC, b"spotify", b"missing_request.json"
-        )
-        with open(json_file, "rb") as f:
-            response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "missing_request.json"
+        response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -78,7 +75,7 @@ class SpotifyPluginTest(PluginTestCase):
             length=10,
         )
         item.add(self.lib)
-        assert [] == self.spotify._match_library_tracks(self.lib, "")
+        assert self.spotify._match_library_tracks(self.lib, "") == []
 
         params = _params(responses.calls[0].request.url)
         query = params["q"][0]
@@ -89,11 +86,8 @@ class SpotifyPluginTest(PluginTestCase):
 
     @responses.activate
     def test_track_request(self):
-        json_file = os.path.join(
-            _common.RSRC, b"spotify", b"track_request.json"
-        )
-        with open(json_file, "rb") as f:
-            response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "track_request.json"
+        response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -111,8 +105,8 @@ class SpotifyPluginTest(PluginTestCase):
         )
         item.add(self.lib)
         results = self.spotify._match_library_tracks(self.lib, "Happy")
-        assert 1 == len(results)
-        assert "6NPVjNh8Jhru9xOmyQigds" == results[0]["id"]
+        assert len(results) == 1
+        assert results[0]["id"] == "6NPVjNh8Jhru9xOmyQigds"
         self.spotify._output_match_results(results)
 
         params = _params(responses.calls[0].request.url)
@@ -127,9 +121,8 @@ class SpotifyPluginTest(PluginTestCase):
         """Tests if plugin is able to fetch a track by its Spotify ID"""
 
         # Mock the Spotify 'Get Track' call
-        json_file = os.path.join(_common.RSRC, b"spotify", b"track_info.json")
-        with open(json_file, "rb") as f:
-            response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "track_info.json"
+        response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -140,9 +133,8 @@ class SpotifyPluginTest(PluginTestCase):
         )
 
         # Mock the Spotify 'Get Album' call
-        json_file = os.path.join(_common.RSRC, b"spotify", b"album_info.json")
-        with open(json_file, "rb") as f:
-            response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "album_info.json"
+        response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -153,11 +145,8 @@ class SpotifyPluginTest(PluginTestCase):
         )
 
         # Mock the Spotify 'Search' call
-        json_file = os.path.join(
-            _common.RSRC, b"spotify", b"track_request.json"
-        )
-        with open(json_file, "rb") as f:
-            response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "track_request.json"
+        response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -177,21 +166,18 @@ class SpotifyPluginTest(PluginTestCase):
         item.add(self.lib)
 
         results = self.spotify._match_library_tracks(self.lib, "Happy")
-        assert 1 == len(results)
-        assert "6NPVjNh8Jhru9xOmyQigds" == results[0]["id"]
+        assert len(results) == 1
+        assert results[0]["id"] == "6NPVjNh8Jhru9xOmyQigds"
 
     @responses.activate
     def test_japanese_track(self):
         """Ensure non-ASCII characters remain unchanged in search queries"""
 
         # Path to the mock JSON file for the Japanese track
-        json_file = os.path.join(
-            _common.RSRC, b"spotify", b"japanese_track_request.json"
-        )
+        json_file = _common.RSRC / "spotify" / "japanese_track_request.json"
 
         # Load the mock JSON response
-        with open(json_file, "rb") as f:
-            response_body = f.read()
+        response_body = json_file.read_bytes()
 
         # Mock Spotify Search API response
         responses.add(
@@ -221,7 +207,7 @@ class SpotifyPluginTest(PluginTestCase):
 
             # Assertions to verify results
             assert results is not None
-            assert 1 == len(results)
+            assert len(results) == 1
             assert results[0]["name"] == item.title
             assert results[0]["artists"][0]["name"] == item.albumartist
             assert results[0]["album"]["name"] == item.album
@@ -249,11 +235,8 @@ class SpotifyPluginTest(PluginTestCase):
         track info correctly"""
 
         # Mock the Spotify 'Get Album' call
-        json_file = os.path.join(
-            _common.RSRC, b"spotify", b"multiartist_album.json"
-        )
-        with open(json_file, "rb") as f:
-            album_response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "multiartist_album.json"
+        album_response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -264,11 +247,8 @@ class SpotifyPluginTest(PluginTestCase):
         )
 
         # Mock the Spotify 'Get Track' call
-        json_file = os.path.join(
-            _common.RSRC, b"spotify", b"multiartist_track.json"
-        )
-        with open(json_file, "rb") as f:
-            track_response_body = f.read()
+        json_file = _common.RSRC / "spotify" / "multiartist_track.json"
+        track_response_body = json_file.read_bytes()
 
         responses.add(
             responses.GET,
@@ -398,7 +378,7 @@ class SpotifyPluginTest(PluginTestCase):
             item["spotify_track_id"] = f"id-{idx}"
             items.append(item)
 
-        self.spotify._fetch_info(items, write=False, force=True)
+        self.spotify._fetch_info(self.lib, items, write=False, force=True)
 
         get_calls = [
             call for call in responses.calls if call.request.method == "GET"
@@ -497,12 +477,52 @@ class SpotifyPluginTest(PluginTestCase):
             item["spotify_track_id"] = "shared-id"
             items.append(item)
 
-        self.spotify._fetch_info(items, write=False, force=True)
+        self.spotify._fetch_info(self.lib, items, write=False, force=True)
 
         assert seen_track_ids == [["shared-id"]]
         assert seen_audio_ids == [["shared-id"]]
         assert items[0]["spotify_track_popularity"] == 50
         assert items[1]["spotify_track_popularity"] == 50
+
+    @responses.activate
+    def test_fetch_info_writes_before_store(self):
+        responses.add(
+            responses.GET,
+            spotify.SpotifyPlugin.track_url,
+            status=200,
+            json={
+                "tracks": [{"id": "id-1", "popularity": 10, "external_ids": {}}]
+            },
+            content_type="application/json",
+        )
+        responses.add(
+            responses.GET,
+            spotify.SpotifyPlugin.audio_features_url,
+            status=200,
+            json={"audio_features": [{"id": "id-1", "tempo": 100.1}]},
+            content_type="application/json",
+        )
+
+        item = self.add_item_fixture(title="Track 1", artist="Artist")
+        item["spotify_track_id"] = "id-1"
+
+        with self.assertLogs("beets", level="DEBUG") as captured_logs:
+            self.spotify._fetch_info(self.lib, [item], write=True, force=True)
+
+        logs = captured_logs.output
+
+        write_event_index = next(
+            idx
+            for idx, message in enumerate(logs)
+            if message.endswith("Sending event: write")
+        )
+        database_change_index = next(
+            idx
+            for idx, message in enumerate(logs)
+            if message.endswith("Sending event: database_change")
+        )
+
+        assert write_event_index < database_change_index
 
     @responses.activate
     def test_track_audio_features_batch_disables_on_403(self):

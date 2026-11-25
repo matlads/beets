@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Parsing of strings into DBCore queries."""
 
 from __future__ import annotations
@@ -158,17 +144,16 @@ def construct_query_part(
     # Apply negation.
     if negate:
         return query.NotQuery(out_query)
-    else:
-        return out_query
+    return out_query
 
 
 # TYPING ERROR
 def query_from_strings(
-    query_cls: type[query.CollectionQuery],
+    query_cls: type[query.AnyCollectionQuery],
     model_cls: type[LibModel],
     prefixes: Prefixes,
     query_parts: Collection[str],
-) -> query.Query:
+) -> query.AnyCollectionQuery:
     """Creates a collection query of type `query_cls` from a list of
     strings in the format used by parse_query_part. `model_cls`
     determines how queries are constructed from strings.
@@ -198,16 +183,7 @@ def construct_sort_part(
     assert direction in ("+", "-"), "part must end with + or -"
     is_ascending = direction == "+"
 
-    if sort_cls := model_cls._sorts.get(field):
-        if isinstance(sort_cls, sort.SmartArtistSort):
-            field = "albumartist" if model_cls.__name__ == "Album" else "artist"
-    elif field in model_cls._fields:
-        sort_cls = sort.FixedFieldSort
-    else:
-        # Flexible or computed.
-        sort_cls = sort.SlowFieldSort
-
-    return sort_cls(field, is_ascending, case_insensitive)
+    return model_cls.field_sort(field, is_ascending, case_insensitive)
 
 
 def sort_from_strings(
@@ -218,13 +194,12 @@ def sort_from_strings(
     """Create a `Sort` from a list of sort criteria (strings)."""
     if not sort_parts:
         return sort.NullSort()
-    elif len(sort_parts) == 1:
+    if len(sort_parts) == 1:
         return construct_sort_part(model_cls, sort_parts[0], case_insensitive)
-    else:
-        s = sort.MultipleSort()
-        for part in sort_parts:
-            s.add_sort(construct_sort_part(model_cls, part, case_insensitive))
-        return s
+    s = sort.MultipleSort()
+    for part in sort_parts:
+        s.add_sort(construct_sort_part(model_cls, part, case_insensitive))
+    return s
 
 
 def parse_sorted_query(

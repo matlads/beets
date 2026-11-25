@@ -4,23 +4,22 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from beets import config, library
-from beets.autotag.hooks import AlbumInfo, AlbumMatch, TrackInfo
-from beets.autotag.match import distance
+from beets import library
+from beets.autotag import AlbumInfo, AlbumMatch, Source, TrackInfo, distance
 from beets.exceptions import UserError
 from beets.test import _common
 from beets.test.helper import BeetsTestCase, IOMixin
-from beets.ui.commands.import_ import import_files, paths_from_logfile
+from beets.ui.commands.import_ import paths_from_logfile
 from beets.ui.commands.import_.display import show_change
 from beets.ui.commands.import_.session import summarize_items
 
 
 class ImportTest(BeetsTestCase):
     def test_quiet_timid_disallowed(self):
-        config["import"]["quiet"] = True
-        config["import"]["timid"] = True
+        self.config["import"]["quiet"] = True
+        self.config["import"]["timid"] = True
         with pytest.raises(UserError):
-            import_files(None, [], None)
+            self.run_command("import")
 
     def test_parse_paths_from_logfile(self):
         if os.path.__name__ == "ntpath":
@@ -30,11 +29,13 @@ class ImportTest(BeetsTestCase):
                 "duplicate-replace C:\\music\\Bill Evans\\Trio '65\n"
                 "skip C:\\music\\Michael Jackson\\Bad\n"
                 "skip C:\\music\\Soulwax\\Any Minute Now\n"
+                "skip C:\\music\\Band; The\\Album\\01.mp3; C:\\music\\Band; The\\Album\\02.mp3\n"  # noqa: E501
             )
             expected_paths = [
                 "C:\\music\\Beatles, The\\The Beatles",
                 "C:\\music\\Michael Jackson\\Bad",
                 "C:\\music\\Soulwax\\Any Minute Now",
+                "C:\\music\\Band; The\\Album",
             ]
         else:
             logfile_content = (
@@ -43,16 +44,17 @@ class ImportTest(BeetsTestCase):
                 "duplicate-replace /music/Bill Evans/Trio '65\n"
                 "skip /music/Michael Jackson/Bad\n"
                 "skip /music/Soulwax/Any Minute Now\n"
+                "skip /music/Band; The/Album/01.mp3; /music/Band; The/Album/02.mp3\n"
             )
             expected_paths = [
                 "/music/Beatles, The/The Beatles",
                 "/music/Michael Jackson/Bad",
                 "/music/Soulwax/Any Minute Now",
+                "/music/Band; The/Album",
             ]
 
-        logfile = os.path.join(self.temp_dir, b"logfile.log")
-        with open(logfile, mode="w") as fp:
-            fp.write(logfile_content)
+        logfile = self.temp_path / "logfile.log"
+        logfile.write_text(logfile_content)
         actual_paths = list(paths_from_logfile(logfile))
         assert actual_paths == expected_paths
 
@@ -62,11 +64,17 @@ class ShowChangeTestCase(IOMixin, BeetsTestCase):
     def _show_change(self):
         """Return an unicode string representing the changes"""
         long_name = f"a{' very' * 10} long name"
+        album = "another album"
+        albumartist = f"another artist with {long_name}"
+
+        def make_item(**kwargs):
+            return _common.item(album=album, albumartist=albumartist, **kwargs)
+
         items = [
-            _common.item(track=1, title="first title"),
-            _common.item(track=2, title="", path=b"/path/to/file.mp3"),
-            _common.item(track=3, title="caf\xe9"),
-            _common.item(track=4, title=f"title with {long_name}"),
+            make_item(track=1, title="first title"),
+            make_item(track=2, title="", path=b"/path/to/file.mp3"),
+            make_item(track=3, title="caf\xe9"),
+            make_item(track=4, title=f"title with {long_name}"),
         ]
         info = AlbumInfo(
             album="caf\xe9",
@@ -83,12 +91,13 @@ class ShowChangeTestCase(IOMixin, BeetsTestCase):
         item_info_pairs = list(zip(items, info.tracks))
         self.config["ui"]["color"] = False
         self.config["import"]["detail"] = True
-        change_dist = distance(items, info, item_info_pairs)
+        source = Source.from_items(items)
+        change_dist = distance(
+            source.data, info, item_info_pairs, len(items) - len(info.tracks)
+        )
         change_dist._penalties = {"album": [0.1], "artist": [0.1]}
         show_change(
-            f"another artist with {long_name}",
-            "another album",
-            AlbumMatch(change_dist, info, dict(item_info_pairs)),
+            AlbumMatch(change_dist, info, dict(item_info_pairs)), source
         )
         return self.io.getoutput()
 

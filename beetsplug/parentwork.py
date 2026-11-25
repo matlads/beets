@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2017, Dorian Soergel.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Gets parent work, its disambiguation and id, composer, composer sort name
 and work composition date
 """
@@ -28,11 +14,17 @@ from beets.plugins import BeetsPlugin
 from ._utils.musicbrainz import MusicBrainzAPIMixin
 
 if TYPE_CHECKING:
+    import optparse
+
+    from beets.importer import ImportSession, ImportTask
+    from beets.library import Item, Library
     from beetsplug._utils.musicbrainz import Work
+
+    from ._typing import JSONDict
 
 
 class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.config.add({"auto": False, "force": False})
@@ -40,13 +32,13 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
         if self.config["auto"]:
             self.import_stages = [self.imported]
 
-    def commands(self):
-        def func(lib, opts, args):
+    def commands(self) -> list[ui.Subcommand]:
+        def func(lib: Library, opts: optparse.Values, args: list[str]) -> None:
             self.config.set_args(opts)
             force_parent = self.config["force"].get(bool)
             write = ui.should_write()
 
-            for item in lib.items(args):
+            for item in lib.items(args, limit=opts.limit):
                 changed = self.find_work(item, force_parent, verbose=True)
                 if changed:
                     item.store()
@@ -66,10 +58,11 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
             help="re-fetch when parent work is already present",
         )
 
+        command.parser.add_limit_option()
         command.func = func
         return [command]
 
-    def imported(self, session, task):
+    def imported(self, session: ImportSession, task: ImportTask) -> None:
         """Import hook for fetching parent works automatically."""
         force_parent = self.config["force"].get(bool)
 
@@ -77,7 +70,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
             self.find_work(item, force_parent, verbose=False)
             item.store()
 
-    def get_info(self, item, work_info):
+    def get_info(self, item: Item, work_info: Work) -> JSONDict:
         """Given the parent work info dict, fetch parent_composer,
         parent_composer_sort, parentwork, parentwork_disambig, mb_workid and
         composer_ids.
@@ -93,7 +86,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
                 composer_exists = True
                 parent_composer.append(artist["artist"]["name"])
                 parent_composer_sort.append(artist["artist"]["sort_name"])
-                if "end" in artist.keys():
+                if "end" in artist:
                     parentwork_info["parentwork_date"] = artist["end"]
 
             parentwork_info["parent_composer"] = ", ".join(parent_composer)
@@ -120,7 +113,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
 
         return parentwork_info
 
-    def find_work(self, item, force, verbose):
+    def find_work(self, item: Item, force: bool, verbose: bool) -> bool | None:
         """Finds the parent work of a recording and populates the tags
         accordingly.
 
@@ -137,7 +130,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
                 "No work for {0}, add one at https://musicbrainz.org/recording/{0.mb_trackid}",
                 item,
             )
-            return
+            return None
 
         hasparent = hasattr(item, "parentwork")
         work_changed = True
@@ -148,7 +141,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
                 work_info, work_date = self.find_parentwork_info(item.mb_workid)
             except requests.exceptions.RequestException:
                 self._log.debug("error fetching work", item, exc_info=True)
-                return
+                return None
             parent_info = self.get_info(item, work_info)
             parent_info["parentwork_workid_current"] = item.mb_workid
             if "parent_composer" in parent_info:
@@ -165,7 +158,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
 
         elif hasparent:
             self._log.debug("{}: Work present, skipping", item)
-            return
+            return None
 
         # apply all non-null values to the item
         for key, value in parent_info.items():
@@ -188,6 +181,7 @@ class ParentWorkPlugin(MusicBrainzAPIMixin, BeetsPlugin):
                     "parentwork_date",
                 ],
             )
+        return None
 
     def find_parentwork_info(self, mb_workid: str) -> tuple[Work, str | None]:
         """Get the MusicBrainz information dict about a parent work, including

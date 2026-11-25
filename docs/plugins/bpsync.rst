@@ -1,7 +1,10 @@
 BPSync Plugin
 =============
 
-.. deprecated:: 2.8 Depends on the deprecated :doc:`beatport` plugin. See :bug:`3862` and :bug:`4477`.
+.. deprecated:: 2.8
+
+    Depends on the deprecated :doc:`beatport` plugin. See :bug:`3862` and
+    :bug:`4477`.
 
 This plugin provides the ``bpsync`` command, which lets you fetch metadata from
 Beatport for albums and tracks that already have Beatport IDs. This plugin works
@@ -32,3 +35,4 @@ The command has a few command-line options:
 - If you have the ``import.write`` configuration option enabled, then this
   plugin will write new metadata to files' tags. To disable this, use the ``-W``
   (``--nowrite``) option.
+- To cap the matched tracks or albums before syncing, use ``-l``/``--limit``.

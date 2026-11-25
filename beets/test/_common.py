@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Some common functionality for beets' test cases."""
 
 from __future__ import annotations
@@ -19,44 +5,27 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import beets
 import beets.library
 
 # Make sure the development versions of the plugins are used
-import beetsplug
-from beets import importer, logging, util
+from beets import importer, logging
 from beets.ui import commands
-from beets.util import syspath
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
     import pytest
 
-beetsplug.__path__ = [
-    os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__),
-            os.path.pardir,
-            os.path.pardir,
-            "beetsplug",
-        )
-    )
-]
+    from beets.dbcore import Query
+    from beets.library import Item, Library
 
 # Test resources path.
-RSRC = util.bytestring_path(
-    os.path.abspath(
-        os.path.join(
-            os.path.dirname(__file__),
-            os.path.pardir,
-            os.path.pardir,
-            "test",
-            "rsrc",
-        )
-    )
-)
-PLUGINPATH = os.path.join(RSRC.decode(), "beetsplug")
+RSRC = (Path(__file__).parent.parent.parent / "test" / "rsrc").resolve()
+PLUGINPATH = str(RSRC / "beetsplug")
 
 # Propagate to root logger so the test runner can capture it
 log = logging.getLogger("beets")
@@ -68,7 +37,7 @@ HAVE_SYMLINK = sys.platform != "win32"
 HAVE_HARDLINK = sys.platform != "win32"
 
 
-def item(lib=None, **kwargs):
+def item(lib: Library | None = None, **kwargs) -> Item:
     defaults = dict(
         title="the title",
         artist="the artist",
@@ -111,7 +80,13 @@ def item(lib=None, **kwargs):
 
 
 # Dummy import session.
-def import_session(lib=None, loghandler=None, paths=[], query=[], cli=False):
+def import_session(
+    lib: Library,
+    loghandler: logging.Handler | None = None,
+    paths: Sequence[bytes] | None = None,
+    query: str | Sequence[str] | Query | None = None,
+    cli: bool = False,
+) -> importer.ImportSession:
     cls = (
         commands.import_.session.TerminalImportSession
         if cli
@@ -174,31 +149,11 @@ class DummyIO:
         return self._capteesys.readouterr().out
 
 
-# Utility.
-
-
-def touch(path):
-    open(syspath(path), "a").close()
-
-
-class Bag:
-    """An object that exposes a set of fields given as keyword
-    arguments. Any field not found in the dictionary appears to be None.
-    Used for mocking Album objects and the like.
-    """
-
-    def __init__(self, **fields):
-        self.fields = fields
-
-    def __getattr__(self, key):
-        return self.fields.get(key)
-
-
 # Platform mocking.
 
 
 @contextmanager
-def platform_windows():
+def platform_windows() -> Iterator[None]:
     import ntpath
 
     old_path = os.path
@@ -210,7 +165,7 @@ def platform_windows():
 
 
 @contextmanager
-def platform_posix():
+def platform_posix() -> Iterator[None]:
     import posixpath
 
     old_path = os.path
@@ -222,7 +177,7 @@ def platform_posix():
 
 
 @contextmanager
-def system_mock(name):
+def system_mock(name: str) -> Iterator[None]:
     import platform
 
     old_system = platform.system

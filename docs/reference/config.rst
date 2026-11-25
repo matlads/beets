@@ -60,6 +60,33 @@ directory
 The directory to which files will be copied/moved when adding them to the
 library. Defaults to a folder called ``Music`` in your home directory.
 
+tempfile_prefix
+~~~~~~~~~~~~~~~
+
+The prefix used for temporary files when moving files across filesystems. If
+unset, temporary files use a leading dot (``.``). This can be changed when
+moving files to a Windows or Samba share, where a leading dot may cause the file
+to be treated as hidden.
+
+editor
+~~~~~~
+
+The text editor to use when editing configuration files (e.g., via ``beet config
+-e``). Overrides the ``$VISUAL`` and ``$EDITOR`` environment variables. If none
+of these are set, beets falls back to the platform default. Example:
+
+::
+
+    editor: nano
+
+create_backup_before_migrations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Either ``yes`` or ``no``, indicating whether a backup of the database file
+should be created before applying any pending schema migrations after a beets
+upgrade. The backup is only made when there are actually migrations to run.
+Defaults to ``yes``.
+
 .. _plugins-config:
 
 plugins
@@ -175,6 +202,26 @@ from it for technical reasons.
     files before applying it to your whole library.
 
 Default: ``_``.
+
+.. _empty_component_replace:
+
+empty_component_replace
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A string that stands in for a path component that would otherwise be empty,
+which happens when a field used in a path template has no value. By default such
+a component is dropped and the file is stored one directory higher than the
+template describes: with the path format ``$album/$artist/$title`` and an empty
+``artist``, a track ends up at ``one/three``.
+
+Setting this to ``_`` stores it at ``one/_/three`` instead. Leading and trailing
+empty components are filled in the same way, so an empty ``title`` under
+``$album/$title`` gives ``one/_``, and an empty ``album`` gives ``_/three``.
+
+This option is related to :ref:`replace`, but applies to whole path components
+rather than to characters within them.
+
+Default: none, i.e. empty components are dropped.
 
 .. _asciify-paths:
 
@@ -369,6 +416,26 @@ The defaults look like this:
         bracket: '[]'
 
 See :ref:`sunique` for more details.
+
+.. _config-tunique:
+
+tunique
+~~~~~~~
+
+Like :ref:`config-aunique` above for albums, these options control the
+generation of a unique string to disambiguate tracks that share the same title
+within an album.
+
+The defaults look like this:
+
+::
+
+    tunique:
+        keys: title
+        disambiguators: disc track artist
+        bracket: '[]'
+
+See :ref:`tunique` for more details.
 
 .. _terminal_encoding:
 
@@ -809,16 +876,39 @@ Default:
     album: albumartist album
     item: artist title
 
+For MusicBrainz-tagged libraries, adding ``mb_albumid`` to the album keys
+distinguishes separate releases that have the same album artist and title:
+
+.. code-block:: yaml
+
+    album: albumartist album mb_albumid
+    item: artist title
+
+All configured fields must match. Albums with different MusicBrainz release IDs
+will therefore not be considered duplicates. An album without a MusicBrainz
+release ID will also not match an otherwise identical album that has one.
+
 .. _duplicate_action:
 
 duplicate_action
 ~~~~~~~~~~~~~~~~
 
-Either ``skip``, ``keep``, ``remove``, ``merge`` or ``ask``. Controls how
-duplicates are treated in import task. "skip" means that new item(album or
-track) will be skipped; "keep" means keep both old and new items; "remove" means
-remove old item; "merge" means merge into one album; "ask" means the user should
-be prompted for the action each time. The default is ``ask``.
+Either ``skip``, ``keep``, ``remove``, ``merge``, ``upgrade`` or ``ask``.
+Controls how duplicates are treated in import task. "skip" means that new
+item(album or track) will be skipped; "keep" means keep both old and new items;
+"remove" means remove old item; "merge" means merge into one album; "ask" means
+the user should be prompted for the action each time. The default is ``ask``.
+
+"upgrade" compares each newly-imported track against any existing duplicate with
+the same :ref:`duplicate_keys`: a track only replaces its old counterpart if it
+has a higher bitrate, and tracks with no old counterpart are always added. The
+rest of the existing album is left untouched, and the kept tracks are added to
+that same album rather than a new one. If the import matches more than one
+existing album (e.g. two differently-encoded copies of the same release already
+in the library), only the album it overlaps with the most is upgraded; every
+other candidate album is left completely untouched, since a track can only ever
+be added to one album. When ``duplicate_action`` is ``ask``, "upgrade" is one of
+the available interactive choices.
 
 .. _duplicate_verbose_prompt:
 
@@ -838,7 +928,7 @@ is applied, which would, considering the default, look like this:
     New: 2 items, MP3, 320kbps, 7:18, 17.1 MiB
       Artist Name - Album Name - First Track Title
       Artist Name - Album Name - Second Track Title
-    [S]kip new, Keep all, Remove old, Merge all?
+    [S]kip new, Merge all, Remove old, Keep all, Upgrade?
 
 Default: ``no``.
 
@@ -1222,6 +1312,11 @@ YAML file containing options that will then be merged with your existing options
 your configuration mostly the same but modify a few options as a batch. For
 example, you might have different strategies for importing files, each with a
 different set of importer options.
+
+You can pass ``--config`` several times to merge a stack of such files, where
+each one overrides the options set by the ones before it. This lets you keep
+small, single-purpose overlays and combine the ones you need for a given run.
+Note that ``beet config --edit`` opens the first of them.
 
 Default Location
 ~~~~~~~~~~~~~~~~

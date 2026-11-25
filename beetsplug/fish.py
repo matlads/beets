@@ -1,18 +1,3 @@
-# This file is part of beets.
-# Copyright 2015, winters jean-marie.
-# Copyright 2020, Justin Mayer <https://justinmayer.com>
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """This plugin generates tab completions for Beets commands for the Fish shell
 <https://fishshell.com/>, including completions for Beets commands, plugin
 commands, and option flags. Also generated are completions for all the album
@@ -22,12 +7,27 @@ by default but can be added via the `-e` / `--extravalues` flag. For example:
 `beet fish -e genres -e albumartist`
 """
 
+from __future__ import annotations
+
 import os
 from operator import attrgetter
+from typing import TYPE_CHECKING, Any, Protocol
 
 from beets import library, plugins, ui
 from beets.plugins import BeetsPlugin
 from beets.ui import commands
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from beets.library import Library
+
+
+class FishCLIOpts(Protocol):
+    extravalues: list[str] | None
+    noFields: bool  # noqa: N815
+    output: str
+
 
 BL_NEED2 = """complete -c beet -n '__fish_beet_needs_command' {} {}\n"""
 BL_USE3 = """complete -c beet -n '__fish_beet_using_command {}' {} {}\n"""
@@ -67,7 +67,7 @@ end
 
 
 class FishPlugin(BeetsPlugin):
-    def commands(self):
+    def commands(self) -> list[ui.Subcommand]:
         cmd = ui.Subcommand("fish", help="generate Fish shell tab completions")
         cmd.func = self.run
         cmd.parser.add_option(
@@ -82,7 +82,7 @@ class FishPlugin(BeetsPlugin):
             "--extravalues",
             action="append",
             type="choice",
-            choices=library.Item.all_keys() + library.Album.all_keys(),
+            choices=list(library.Item.all_keys() | library.Album.all_keys()),
             help="include specified field *values* in completions",
         )
         cmd.parser.add_option(
@@ -95,7 +95,7 @@ class FishPlugin(BeetsPlugin):
         )
         return [cmd]
 
-    def run(self, lib, opts, args):
+    def run(self, lib: Library, opts: FishCLIOpts, args: list[str]) -> None:
         # Gather the commands from Beets core and its plugins.
         # Collect the album and track fields.
         # If specified, also collect the values for these fields.
@@ -114,7 +114,7 @@ class FishPlugin(BeetsPlugin):
             (commands.default_commands + plugins.commands()),
             key=attrgetter("name"),
         )
-        fields = sorted(set(library.Album.all_keys() + library.Item.all_keys()))
+        fields = sorted(library.Album.all_keys() | library.Item.all_keys())
         # Collect commands, their aliases, and their help text
         cmd_names_help = []
         for cmd in beetcmds:
@@ -138,25 +138,24 @@ class FishPlugin(BeetsPlugin):
             fish_file.write(totstring)
 
 
-def _escape(name):
+def _escape(name: str) -> str:
     # Escape ? in fish
     if name == "?":
         name = f"\\{name}"
     return name
 
 
-def get_cmds_list(cmds_names):
+def get_cmds_list(cmds_names: Iterable[str]) -> str:
     # Make a list of all Beets core & plugin commands
     return f"set CMDS {' '.join(cmds_names)}\n\n"
 
 
-def get_standard_fields(fields):
+def get_standard_fields(fields: Iterable[str]) -> str:
     # Make a list of album/track fields and append with ':'
-    fields = (f"{field}:" for field in fields)
-    return f"set FIELDS {' '.join(fields)}\n\n"
+    return f"set FIELDS {' '.join(f'{field}:' for field in fields)}\n\n"
 
 
-def get_extravalues(lib, extravalues):
+def get_extravalues(lib: Library, extravalues: Sequence[str]) -> str:
     # Make a list of all values from an album/track field.
     # 'beet ls albumartist: <TAB>' yields completions for ABBA, Beatles, etc.
     word = ""
@@ -167,9 +166,11 @@ def get_extravalues(lib, extravalues):
     return word
 
 
-def get_set_of_values_for_field(lib, fields):
+def get_set_of_values_for_field(
+    lib: Library, fields: Sequence[str]
+) -> dict[str, set[Any]]:
     # Get unique values from a specified album/track field
-    fields_dict = {}
+    fields_dict: dict[str, set[str]] = {}
     for each in fields:
         fields_dict[each] = set()
     for item in lib.items():
@@ -178,8 +179,8 @@ def get_set_of_values_for_field(lib, fields):
     return fields_dict
 
 
-def get_basic_beet_options():
-    word = (
+def get_basic_beet_options() -> str:
+    return (
         BL_NEED2.format("-l format-item", "-f -d 'print with custom format'")
         + BL_NEED2.format("-l format-album", "-f -d 'print with custom format'")
         + BL_NEED2.format(
@@ -198,10 +199,13 @@ def get_basic_beet_options():
             "-s  h  -l help", "-f -d 'print this help message and exit'"
         )
     )
-    return word
 
 
-def get_subcommands(cmd_name_and_help, nobasicfields, extravalues):
+def get_subcommands(
+    cmd_name_and_help: Iterable[tuple[str, str]],
+    nobasicfields: bool,
+    extravalues: Iterable[str] | None,
+) -> str:
     # Formatting for Fish to complete our fields/values
     word = ""
     for cmdname, cmdhelp in cmd_name_and_help:
@@ -229,7 +233,7 @@ def get_subcommands(cmd_name_and_help, nobasicfields, extravalues):
     return word
 
 
-def get_all_commands(beetcmds):
+def get_all_commands(beetcmds: Sequence[ui.Subcommand]) -> str:
     # Formatting for Fish to complete command options
     word = ""
     for cmd in beetcmds:
@@ -278,12 +282,12 @@ def get_all_commands(beetcmds):
     return word
 
 
-def clean_whitespace(word):
+def clean_whitespace(word: str) -> str:
     # Remove excess whitespace and tabs in a string
     return " ".join(word.split())
 
 
-def wrap(word):
+def wrap(word: str) -> str:
     # Need " or ' around strings but watch out if they're in the string
     sptoken = '"'
     if '"' in word and ("'") in word:

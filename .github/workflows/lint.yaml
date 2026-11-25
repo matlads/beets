@@ -2,6 +2,7 @@ name: Lint check
 run-name: Lint code
 on:
   pull_request:
+  merge_group:
   push:
     branches:
       - master
@@ -12,7 +13,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  PYTHON_VERSION: "3.10"
+  PYTHON_VERSION: "3.11"
 
 jobs:
   changed-files:
@@ -24,28 +25,29 @@ jobs:
       changed_doc_files: ${{ steps.changed-doc-files.outputs.all_changed_files }}
       changed_python_files: ${{ steps.changed-python-files.outputs.all_changed_files }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Get changed docs files
         id: changed-doc-files
-        uses: tj-actions/changed-files@v46
+        uses: tj-actions/changed-files@v47
         with:
           files: |
             docs/**
+            uv.lock
       - name: Get changed python files
         id: raw-changed-python-files
-        uses: tj-actions/changed-files@v46
+        uses: tj-actions/changed-files@v47
         with:
           files: |
             **.py
-            poetry.lock
+            uv.lock
 
       - name: Check changed python files
         id: changed-python-files
         env:
           CHANGED_PYTHON_FILES: ${{ steps.raw-changed-python-files.outputs.all_changed_files }}
         run: |
-          if [[ " $CHANGED_PYTHON_FILES " == *" poetry.lock "* ]]; then
-            # if poetry.lock is changed, we need to check everything
+          if [[ " $CHANGED_PYTHON_FILES " == *" uv.lock "* ]]; then
+            # if uv.lock is changed, we need to check everything
             CHANGED_PYTHON_FILES="."
           fi
           echo "all_changed_files=$CHANGED_PYTHON_FILES" >> "$GITHUB_OUTPUT"
@@ -56,16 +58,17 @@ jobs:
     name: Check formatting
     needs: changed-files
     steps:
-      - uses: actions/checkout@v5
-      - name: Install Python tools
-        uses: BrandonLWhite/pipx-install-action@v1.0.3
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: poetry
+
+      - name: Install Python tools
+        run: uv tool install "poethepoet>=0.26,<0.47.0"
 
       - name: Install dependencies
-        run: poetry install --only=lint
+        run: poe install --only-group lint
 
       - name: Check code formatting
         # the job output will contain colored diffs with what needs adjusting
@@ -77,16 +80,17 @@ jobs:
     name: Check linting
     needs: changed-files
     steps:
-      - uses: actions/checkout@v5
-      - name: Install Python tools
-        uses: BrandonLWhite/pipx-install-action@v1.0.3
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: poetry
+
+      - name: Install Python tools
+        run: uv tool install "poethepoet>=0.26,<0.47.0"
 
       - name: Install dependencies
-        run: poetry install --only=lint
+        run: poe install --only-group lint
 
       - name: Lint code
         run: poe lint --output-format=github ${{ needs.changed-files.outputs.changed_python_files }}
@@ -97,19 +101,20 @@ jobs:
     name: Check types with mypy
     needs: changed-files
     steps:
-      - uses: actions/checkout@v5
-      - name: Install Python tools
-        uses: BrandonLWhite/pipx-install-action@v1.0.3
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: poetry
+
+      - name: Install Python tools
+        run: uv tool install "poethepoet>=0.26,<0.47.0"
 
       - name: Install dependencies
-        run: poetry install --only=typing
+        run: poe install --only-group typing
 
       - name: Type check code
-        uses: liskin/gh-problem-matcher-wrap@v3
+        uses: liskin/gh-problem-matcher-wrap@v4
         with:
           linters: mypy
           run: poe check-types --show-column-numbers --no-error-summary .
@@ -120,18 +125,19 @@ jobs:
     name: Check docs
     needs: changed-files
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # needed to get the full git history for the changelog check
-      - name: Install Python tools
-        uses: BrandonLWhite/pipx-install-action@v1.0.3
-      - uses: actions/setup-python@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: poetry
+
+      - name: Install Python tools
+        run: uv tool install "poethepoet>=0.26,<0.47.0"
 
       - name: Install dependencies
-        run: poetry install --extras=docs
+        run: poe install --group docs
 
       - name: Add Sphinx problem matchers
         run: |
@@ -145,8 +151,10 @@ jobs:
         run: poe lint-docs
 
       - name: Check changelog entries are added under Unreleased section
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: |
-          git diff --word-diff=plain -U1000 origin/${{ github.base_ref }} -- docs/changelog.rst | awk '
+          git diff --word-diff=plain -U1000 "$BASE_SHA" -- docs/changelog.rst | awk '
             # match the new version header
             /^[0-9]+\.[0-9]+\.[0-9]+ \(/ { past_version=1 }
             # match a line that starts with a new changelog entry

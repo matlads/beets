@@ -1,6 +1,9 @@
 """The `import` command: import new music into the library."""
 
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING, Protocol
 
 from beets import config, logging, plugins, ui
 from beets.exceptions import UserError
@@ -8,11 +11,42 @@ from beets.util import displayable_path, normpath, syspath
 
 from .session import TerminalImportSession
 
+if TYPE_CHECKING:
+    import optparse
+    from collections.abc import Iterator
+
+    from beets.library import Library
+    from beets.ui import SubcommandsOptionParser
+
 # Global logger.
 log = logging.getLogger("beets")
 
 
-def paths_from_logfile(path):
+class ImportCLIOpts(Protocol):
+    copy: bool | None
+    library: bool | None
+    from_logfiles: list[str] | None
+
+
+def get_common_path(paths_string: str) -> str:
+    """Return the common path of a string of paths separated by '; '.
+
+    Handle paths that contain '; ' in their names.
+    """
+    chunks = paths_string.split("; ")
+    if len(chunks) > 1 and os.path.isabs(chunks[0]):
+        merged: list[str] = []
+        for chunk in chunks:
+            if not merged or os.path.isabs(chunk):
+                merged.append(chunk)
+            else:
+                merged[-1] += "; " + chunk
+        chunks = merged
+
+    return os.path.commonpath(chunks)
+
+
+def paths_from_logfile(path: str) -> Iterator[str]:
     """Parse the logfile and yield skipped paths to pass to the `import`
     command.
     """
@@ -29,10 +63,10 @@ def paths_from_logfile(path):
             if verb not in {"asis", "skip", "duplicate-skip"}:
                 raise ValueError(f"line {i} contains unknown verb {verb}")
 
-            yield os.path.commonpath(paths.split("; "))
+            yield get_common_path(paths)
 
 
-def parse_logfiles(logfiles):
+def parse_logfiles(logfiles: list[str]) -> Iterator[str]:
     """Parse all `logfiles` and yield paths from it."""
     for logfile in logfiles:
         try:
@@ -47,7 +81,9 @@ def parse_logfiles(logfiles):
             ) from err
 
 
-def import_files(lib, paths: list[bytes], query):
+def import_files(
+    lib: Library, paths: list[bytes], query: list[str] | None
+) -> None:
     """Import the files in the given list of paths or matching the
     query.
     """
@@ -79,8 +115,8 @@ def import_files(lib, paths: list[bytes], query):
     plugins.send("import", lib=lib, paths=paths)
 
 
-def import_func(lib, opts, args: list[str]):
-    config["import"].set_args(opts)
+def import_func(lib: Library, opts: ImportCLIOpts, args: list[str]) -> None:
+    config["import"].set_args(vars(opts))
 
     # Special case: --copy flag suppresses import_move (which would
     # otherwise take precedence).
@@ -102,7 +138,7 @@ def import_func(lib, opts, args: list[str]):
             raise UserError("no path specified")
 
         byte_paths = [os.fsencode(p) for p in paths]
-        paths_from_logfiles = [os.fsencode(p) for p in paths_from_logfiles]
+        byte_paths_from_logfiles = [os.fsencode(p) for p in paths_from_logfiles]
 
         # Check the user-specified directories.
         for path in byte_paths:
@@ -115,7 +151,7 @@ def import_func(lib, opts, args: list[str]):
         # case those paths don't exist. Maybe some of those paths have already
         # been imported and moved separately, so logging a warning should
         # suffice.
-        for path in paths_from_logfiles:
+        for path in byte_paths_from_logfiles:
             if not os.path.exists(syspath(normpath(path))):
                 log.warning(
                     "No such file or directory: {}", displayable_path(path)
@@ -132,12 +168,17 @@ def import_func(lib, opts, args: list[str]):
     import_files(lib, byte_paths, query)
 
 
-def _store_dict(option, opt_str, value, parser):
+def _store_dict(
+    option: optparse.Option,
+    opt_str: str,
+    value: str,
+    parser: SubcommandsOptionParser,
+) -> None:
     """Custom action callback to parse options which have ``key=value``
     pairs as values. All such pairs passed for this option are
     aggregated into a dictionary.
     """
-    dest = option.dest
+    dest: str = option.dest  # type: ignore[assignment]
     option_values = getattr(parser.values, dest, None)
 
     if option_values is None:

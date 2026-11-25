@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for autotagging functionality."""
 
 import operator
@@ -20,17 +6,20 @@ from functools import cached_property
 
 import pytest
 
-from beets.autotag.distance import Distance
-from beets.autotag.hooks import (
+from beets.autotag import (
     AlbumInfo,
     AlbumMatch,
-    AttrDict,
+    Distance,
     TrackInfo,
     TrackMatch,
     correct_list_fields,
 )
 from beets.library import Item
 from beets.test.helper import BeetsTestCase
+from beets.util import AttrDict
+
+# hide deprecation warnings for the legacy string fields under test
+pytestmark = pytest.mark.filterwarnings(r"ignore::DeprecationWarning")
 
 str_field_deprecation = pytest.warns(
     DeprecationWarning, match="The 'genre' field is deprecated"
@@ -42,6 +31,13 @@ _p = pytest.param
 @pytest.mark.parametrize(
     "str_value, list_value, expected_warning, expected_list_value",
     [
+        _p(
+            "",
+            None,
+            str_field_deprecation,
+            None,
+            id="empty str value should become None, warning raised",
+        ),
         _p(
             "value",
             None,

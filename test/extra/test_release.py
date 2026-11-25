@@ -1,17 +1,16 @@
 """Tests for the release utils."""
 
-import os
 import shutil
 import sys
 
 import pytest
 
-release = pytest.importorskip("extra.release")
-
+from beets.test.helper import RUNNING_IN_CI
+from extra import release
 
 pytestmark = pytest.mark.skipif(
     not (
-        (os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform != "win32")
+        (RUNNING_IN_CI and sys.platform != "win32")
         or bool(shutil.which("pandoc"))
     ),
     reason="pandoc isn't available",
@@ -33,6 +32,8 @@ New features
 - :ref:`list-cmd` Update.
 - |BeetsPlugin| Some plugin change.
 - See :class:`~beetsplug._utils.musicbrainz.MusicBrainzAPI` for documentation.
+- See :class:`~nonexisting_ref` for non-existing reference.
+- See :ref:`Nice title <nonexisting_ref>` for non-existing named reference.
 
 You can do something with this command:
 
@@ -94,6 +95,8 @@ def md_changelog():
 - [list command](https://beets.readthedocs.io/en/stable/reference/cli.html#list-cmd) Update.
 - [Substitute Plugin](https://beets.readthedocs.io/en/stable/plugins/substitute.html): Some substitute multi-line change. :bug: (#5467)
 - See [beetsplug.\_utils.musicbrainz.MusicBrainzAPI](https://beets.readthedocs.io/en/stable/api/generated/beetsplug._utils.musicbrainz.MusicBrainzAPI.html#beetsplug._utils.musicbrainz.MusicBrainzAPI) for documentation.
+- See `Nice title` for non-existing named reference.
+- See `nonexisting_ref` for non-existing reference.
 
 You can do something with this command:
 

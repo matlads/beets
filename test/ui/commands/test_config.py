@@ -1,10 +1,10 @@
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import yaml
 
-from beets import config
 from beets.exceptions import UserError
 from beets.test.helper import BeetsTestCase, IOMixin
 
@@ -16,21 +16,20 @@ class ConfigCommandTest(IOMixin, BeetsTestCase):
             if k in os.environ:
                 del os.environ[k]
 
-        temp_dir = self.temp_dir.decode()
+        temp_dir = self.temp_path
 
-        self.config_path = os.path.join(temp_dir, "config.yaml")
-        with open(self.config_path, "w") as file:
-            file.write("library: lib\n")
-            file.write("option: value\n")
-            file.write("password: password_value")
+        config_path = temp_dir / "config.yaml"
+        lines = ["library: lib", "option: value", "password: password_value"]
+        config_path.write_text("\n".join(lines))
+        self.config_path = str(config_path)
 
-        self.cli_config_path = os.path.join(temp_dir, "cli_config.yaml")
-        with open(self.cli_config_path, "w") as file:
-            file.write("option: cli overwrite")
+        cli_config_path = temp_dir / "cli_config.yaml"
+        cli_config_path.write_text("option: cli overwrite")
+        self.cli_config_path = str(cli_config_path)
 
-        config.clear()
-        config["password"].redact = True
-        config._materialized = False
+        self.config.clear()
+        self.config["password"].redact = True
+        self.config._materialized = False
 
     def _run_with_yaml_output(self, *args):
         output = self.run_with_output(*args)
@@ -103,8 +102,8 @@ class ConfigCommandTest(IOMixin, BeetsTestCase):
         execlp.assert_called_once_with("myvisual", "myvisual", self.config_path)
 
     def test_edit_config_with_automatic_open(self):
-        with patch("beets.util.open_anything") as open:
-            open.return_value = "please_open"
+        with patch("beets.util.open_anything") as open_:
+            open_.return_value = "please_open"
             with patch("os.execlp") as execlp:
                 self.run_command("config", "-e")
         execlp.assert_called_once_with(
@@ -120,10 +119,9 @@ class ConfigCommandTest(IOMixin, BeetsTestCase):
             self.run_command("config", "-e")
 
     def test_edit_invalid_config_file(self):
-        with open(self.config_path, "w") as file:
-            file.write("invalid: [")
-        config.clear()
-        config._materialized = False
+        Path(self.config_path).write_text("invalid: [")
+        self.config.clear()
+        self.config._materialized = False
 
         os.environ["EDITOR"] = "myeditor"
         with patch("os.execlp") as execlp:

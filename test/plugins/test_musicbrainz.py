@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for MusicBrainz API wrapper."""
 
 from __future__ import annotations
@@ -51,10 +37,6 @@ def label_info_factory(**kwargs) -> mb.LabelInfo:
     return factories.LabelInfoFactory.build(**kwargs)
 
 
-def release_group_factory(**kwargs) -> mb.ReleaseGroup:
-    return factories.ReleaseGroupFactory.build(**kwargs)
-
-
 def recording_factory(**kwargs) -> mb.Recording:
     return factories.RecordingFactory.build(**kwargs)
 
@@ -75,6 +57,7 @@ def release_factory(**kwargs) -> mb.Release:
     return factories.ReleaseFactory.build(**kwargs)
 
 
+@pytest.mark.usefixtures("config")
 class TestUtils:
     @pytest.mark.parametrize(
         "date, expected_parts",
@@ -90,7 +73,7 @@ class TestUtils:
     def test_single_artist(self):
         credit = [artist_credit_factory(artist__name="Artist")]
 
-        assert MusicBrainzPlugin._parse_artist_credits(credit) == {
+        assert MusicBrainzPlugin()._parse_artist_credits(credit) == {
             "artist": "Artist",
             "artist_id": "00000000-0000-0000-0000-000000000001",
             "artist_sort": "Artist, The",
@@ -107,7 +90,7 @@ class TestUtils:
             artist_credit_factory(artist__name="Other Artist", artist__index=2),
         ]
 
-        assert MusicBrainzPlugin._parse_artist_credits(credit) == {
+        assert MusicBrainzPlugin()._parse_artist_credits(credit) == {
             "artist": "Artist AND Other Artist",
             "artist_id": "00000000-0000-0000-0000-000000000001",
             "artist_sort": "Artist, The AND Other Artist, The",
@@ -356,6 +339,36 @@ class TestParseMedia(MusicBrainzPluginTestMixin):
         assert t[3].index == 4
         assert t[3].disctitle == "Second Medium"
 
+    @pytest.mark.parametrize(
+        "formats, expected",
+        [
+            (["CD", "CD"], "CD"),
+            (
+                [
+                    "Hybrid SACD (CD layer)",
+                    "Hybrid SACD (SACD layer, 2 channels)",
+                    "Hybrid SACD (SACD layer, multichannel)",
+                ],
+                "Hybrid SACD",
+            ),
+            (["DualDisc (CD side)", "DualDisc (DVD side)"], "DualDisc"),
+            (['12" Vinyl', "DVD-Video"], "Media"),
+            (["CD", None], "Media"),
+        ],
+    )
+    def test_album_media(self, mb, formats, expected):
+        release = release_factory(
+            media=[
+                medium_factory(format=f, position=i)
+                for i, f in enumerate(formats, 1)
+            ]
+        )
+
+        d = mb.album_info(release)
+
+        assert d.media == expected
+        assert [t.media for t in d.tracks] == formats
+
     def test_track_overrides_recording(self, mb):
         release = release_factory(
             media__0__tracks=[
@@ -429,23 +442,32 @@ class TestParseMedia(MusicBrainzPluginTestMixin):
         assert mb.album_info(release).mediums == 2
 
     @pytest.mark.parametrize(
-        "beets_match_config, expected_titles",
+        "beets_match_config, expected_titles, expected_medium_total",
         [
-            _p({}, ("Audio",), id="only audio tracks by default"),
+            _p({}, ("Audio",), 1, id="only audio tracks by default"),
             _p(
                 {"ignore_data_tracks": False},
                 ("Audio", "Data"),
+                2,
                 id="include data tracks",
             ),
             _p(
                 {"ignore_data_tracks": False, "ignore_video_tracks": False},
                 ("Audio", "Video: Video", "Data"),
+                3,
                 id="include data and video tracks",
             ),
-            _p({"ignored_media": "Vinyl"}, (), id="ignore all tracks"),
+            _p({"ignored_media": "Vinyl"}, (), 0, id="ignore all tracks"),
         ],
     )
-    def test_data_tracks(self, config, beets_match_config, mb, expected_titles):
+    def test_data_tracks(
+        self,
+        config,
+        beets_match_config,
+        mb,
+        expected_titles,
+        expected_medium_total,
+    ):
         medium = medium_factory(
             format="Vinyl",
             tracks=[
@@ -459,9 +481,11 @@ class TestParseMedia(MusicBrainzPluginTestMixin):
 
         config.set({"match": beets_match_config})
 
-        actual_titles = tuple(t.title for t in mb.album_info(release).tracks)
+        tracks = mb.album_info(release).tracks
+        actual_titles = tuple(t.title for t in tracks)
 
         assert actual_titles == expected_titles
+        assert all(t.medium_total == expected_medium_total for t in tracks)
 
 
 class TestParseRelease(MusicBrainzPluginTestMixin):
@@ -605,6 +629,9 @@ class TestParseRelease(MusicBrainzPluginTestMixin):
     def test_genres(self, mb, expected_genres):
         assert mb.album_info(release_factory()).genres == expected_genres
 
+    @pytest.mark.parametrize(
+        "plugin_config", [_p({"aliases_as_credits": True})]
+    )
     def test_parse_aliased_titles(self, config, mb: MusicBrainzPlugin):
         release = release_factory()
 
@@ -640,6 +667,53 @@ class TestParseRelease(MusicBrainzPluginTestMixin):
         assert first_track.artist_sort == track_artist_sort
         assert first_track.artists_sort == [track_artist_sort]
 
+    @pytest.mark.parametrize(
+        "plugin_config, expected_artist_credit",
+        [
+            _p(
+                {"aliases_as_credits": False},
+                {
+                    "track_artist_credit": "Recording Artist Credit",
+                    "track_artists_credit": ["Recording Artist Credit"],
+                    "artist_credit": "Artist Credit",
+                    "artists_credit": ["Artist Credit"],
+                },
+                id="no aliases",
+            ),
+            _p(
+                {"aliases_as_credits": True},
+                {
+                    "artist_credit": "Artist Alias en",
+                    "artists_credit": ["Artist Alias en"],
+                    "track_artist_credit": "Recording Artist Alias en",
+                    "track_artists_credit": ["Recording Artist Alias en"],
+                },
+                id="aliases",
+            ),
+        ],
+    )
+    def test_aliases_as_credits(
+        self, config, mb: MusicBrainzPlugin, expected_artist_credit
+    ):
+        config["import"]["languages"] = ["en"]
+        release = release_factory()
+
+        d = mb.album_info(release)
+
+        assert d.artist_credit == expected_artist_credit["artist_credit"]
+        assert d.artists_credit == expected_artist_credit["artists_credit"]
+
+        first_track = d.tracks[0]
+
+        assert (
+            first_track.artist_credit
+            == expected_artist_credit["track_artist_credit"]
+        )
+        assert (
+            first_track.artists_credit
+            == expected_artist_credit["track_artists_credit"]
+        )
+
     def test_ensure_complete_recordings(self, monkeypatch, mb):
         titles = ["Recording", "Other Recording"]
         initial_recordings = [
@@ -671,6 +745,38 @@ class TestParseRelease(MusicBrainzPluginTestMixin):
             t["recording"] for m in release["media"] for t in m["tracks"]
         ]
         assert new_recordings == complete_recordings
+
+    def test_album_info_browse_recordings_prefers_alias_over_track_title(
+        self, config, monkeypatch, mb
+    ):
+        config["import"]["languages"] = ["en"]
+
+        recording = recording_factory(
+            title="Recording Title",
+            aliases=[alias_factory(type="Recording name", locale="en")],
+        )
+        browsed_recording = {
+            **recording,
+            "url_relations": [url_relation_factory()],
+        }
+
+        monkeypatch.setattr("beetsplug.musicbrainz.BROWSE_CHUNKSIZE", 1)
+        monkeypatch.setattr("beetsplug.musicbrainz.BROWSE_MAXTRACKS", 0)
+        monkeypatch.setattr(
+            mb.mb_api,
+            "browse_recordings",
+            lambda offset=0, **__: [browsed_recording] if offset == 0 else [],
+        )
+
+        release = release_factory(
+            media__0__tracks=[
+                track_factory(recording=recording, title="Track Title")
+            ]
+        )
+
+        album = mb.album_info(release)
+
+        assert album.tracks[0].title == "Alias en"
 
 
 class TestPseudoRelease(MusicBrainzPluginTestMixin):
@@ -790,6 +896,39 @@ class TestMusicBrainzPlugin(MusicBrainzPluginTestMixin):
         assert len(candidates) == 1
         assert candidates[0].track_id == self.RECORDING["id"]
 
+    def test_track_for_id_requests_work_rels(self, mb, requests_mock):
+        recording = {
+            **self.RECORDING,
+            "relations": [
+                {
+                    "target-type": "work",
+                    "type": "performance",
+                    "work": {
+                        "id": self.mbid,
+                        "title": "Work Title",
+                        "relations": [
+                            {
+                                "target-type": "artist",
+                                **artist_relation_factory(type=role),
+                            }
+                            for role in ("composer", "lyricist")
+                        ],
+                    },
+                }
+            ],
+        }
+        requests_mock.get(f"/ws/2/recording/{recording['id']}", json=recording)
+
+        track = mb.track_for_id(recording["id"])
+
+        includes = requests_mock.last_request.qs["inc"][0].split("+")
+        assert {"work-rels", "work-level-rels"} <= set(includes)
+        assert track is not None
+        assert track.work == "Work Title"
+        assert track.mb_workid == self.mbid
+        assert track.composers == ["Composer Artist"]
+        assert track.lyricists == ["Lyricist Artist"]
+
     def test_candidates(self, monkeypatch, mb):
         monkeypatch.setattr(
             "beetsplug._utils.musicbrainz.MusicBrainzAPI.get_json",
@@ -840,7 +979,7 @@ class TestMusicBrainzPlugin(MusicBrainzPluginTestMixin):
         assert excinfo.value is error
 
     @pytest.mark.parametrize(
-        "input,expected",
+        "input_,expected",
         [
             ("??-??-??", (None, None, None)),
             ("??-01-??", (None, 1, None)),
@@ -853,5 +992,5 @@ class TestMusicBrainzPlugin(MusicBrainzPluginTestMixin):
             ("2010-01-02", (2010, 1, 2)),
         ],
     )
-    def test_get_date(self, input, expected):
-        assert musicbrainz._get_date(input) == expected
+    def test_get_date(self, input_, expected):
+        assert musicbrainz._get_date(input_) == expected

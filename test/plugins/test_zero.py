@@ -4,7 +4,6 @@ from mediafile import MediaFile
 
 from beets.library import Item
 from beets.test.helper import IOMixin, PluginTestCase
-from beets.util import syspath
 from beetsplug.zero import ZeroPlugin
 
 
@@ -21,7 +20,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         with self.configure_plugin({"fields": ["comments", "month"]}):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.comments is None
         assert mf.month is None
         assert mf.title == "Title"
@@ -36,7 +35,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         ):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.comments is None
 
     def test_pattern_nomatch(self):
@@ -48,7 +47,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         ):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.comments == "recorded at place"
 
     def test_do_not_change_database(self):
@@ -78,7 +77,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         with self.configure_plugin({"fields": ["images"]}):
             item.write()
 
-        mf = MediaFile(syspath(path))
+        mf = MediaFile(path)
         assert not mf.images
 
     def test_auto_false(self):
@@ -105,7 +104,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
             self.io.addinput("y")
             self.run_command("zero")
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         item = self.lib.get_item(item_id)
 
         assert item["year"] == 2016
@@ -126,7 +125,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
             self.io.addinput("y")
             self.run_command("zero")
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         item = self.lib.get_item(item_id)
 
         assert item["year"] == 2016
@@ -146,7 +145,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         ):
             self.run_command("zero", "year: 2016")
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
 
         assert mf.year == 2016
         assert mf.comments is None
@@ -163,7 +162,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         ):
             self.run_command("zero", "year: 0000")
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
 
         assert mf.year == 2016
         assert mf.comments == "test comment"
@@ -171,7 +170,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
     def test_no_fields(self):
         item = self.add_item_fixture(year=2016)
         item.write()
-        mediafile = MediaFile(syspath(item.path))
+        mediafile = MediaFile(item.filepath)
         assert mediafile.year == 2016
 
         item_id = item.id
@@ -188,7 +187,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
     def test_whitelist_and_blacklist(self):
         item = self.add_item_fixture(year=2016)
         item.write()
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.year == 2016
 
         item_id = item.id
@@ -244,7 +243,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         ):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.comments is None
         assert mf.disc is None
         assert mf.disctotal is None
@@ -259,7 +258,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         ):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.comments is None
         assert mf.disc == 1
         assert mf.disctotal == 4
@@ -271,7 +270,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         with self.configure_plugin({"omit_single_disc": True}):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.disc is None
         assert mf.disctotal is None
 
@@ -282,7 +281,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         with self.configure_plugin({"omit_single_disc": True}):
             item.write()
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         assert mf.disc == 1
         assert mf.disctotal == 4
 
@@ -298,7 +297,7 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
             self.io.addinput("n")
             self.run_command("zero")
 
-        mf = MediaFile(syspath(item.path))
+        mf = MediaFile(item.filepath)
         item = self.lib.get_item(item_id)
 
         assert item["year"] == 2016
@@ -313,7 +312,52 @@ class ZeroPluginTest(IOMixin, PluginTestCase):
         with self.configure_plugin({"fields": None, "keep_fields": ["images"]}):
             item.write()
 
-        mf = MediaFile(syspath(path))
+        mf = MediaFile(path)
         assert mf.images, (
             "images should be preserved when 'images' is in keep_fields"
         )
+
+    def test_keep_fields_art_preserves_images(self):
+        path = self.create_mediafile_fixture(images=["jpg"])
+        item = Item.from_path(path)
+
+        with self.configure_plugin({"fields": None, "keep_fields": ["art"]}):
+            item.write()
+
+        mf = MediaFile(path)
+        assert mf.images, (
+            "images should be preserved when 'art' is in keep_fields"
+        )
+
+    def test_keep_fields_genre_preserves_genres(self):
+        item = self.add_item_fixture(genres=["Elektro", "Techno/House"])
+        item.write()
+
+        with self.configure_plugin({"fields": None, "keep_fields": ["genre"]}):
+            item.write()
+
+        mf = MediaFile(item.filepath)
+        assert mf.genres == ["Elektro", "Techno/House"]
+
+    def test_keep_fields_genres_preserves_genres(self):
+        item = self.add_item_fixture(genres=["Elektro", "Techno/House"])
+        item.write()
+
+        with self.configure_plugin({"fields": None, "keep_fields": ["genres"]}):
+            item.write()
+
+        mf = MediaFile(item.filepath)
+        assert mf.genres == ["Elektro", "Techno/House"]
+
+    def test_keep_fields_artist_preserves_artists(self):
+        item = self.add_item_fixture(
+            artist="Test Artist", artists=["Test Artist"]
+        )
+        item.write()
+
+        with self.configure_plugin({"fields": None, "keep_fields": ["artist"]}):
+            item.write()
+
+        mf = MediaFile(item.filepath)
+        assert mf.artist == "Test Artist"
+        assert mf.artists == ["Test Artist"]

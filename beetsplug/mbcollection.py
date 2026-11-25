@@ -1,18 +1,3 @@
-# This file is part of beets.
-# Copyright (c) 2011, Jeffrey Aylesworth <mail@jeffrey.red>
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
-
 from __future__ import annotations
 
 import re
@@ -28,8 +13,10 @@ from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
 
 from ._utils.musicbrainz import MusicBrainzAPI
+from ._utils.requests import BeetsHTTPError
 
 if TYPE_CHECKING:
+    import optparse
     from collections.abc import Iterable, Iterator
 
     from requests import Response
@@ -183,7 +170,7 @@ class MusicBrainzCollectionPlugin(BeetsPlugin):
 
         return MBCollection(collection, self.mb_api)
 
-    def commands(self):
+    def commands(self) -> list[Subcommand]:
         mbupdate = Subcommand("mbupdate", help="Update MusicBrainz collection")
         mbupdate.parser.add_option(
             "-r",
@@ -196,7 +183,9 @@ class MusicBrainzCollectionPlugin(BeetsPlugin):
         mbupdate.func = self.update_collection
         return [mbupdate]
 
-    def update_collection(self, lib: Library, opts, args) -> None:
+    def update_collection(
+        self, lib: Library, opts: optparse.Values, args: list[str]
+    ) -> None:
         self.config.set_args(opts)
         remove_missing = self.config["remove"].get(bool)
         self.update_album_list(lib, lib.albums(), remove_missing)
@@ -212,17 +201,24 @@ class MusicBrainzCollectionPlugin(BeetsPlugin):
         self, lib: Library, albums: Iterable[Album], remove_missing: bool
     ) -> None:
         """Update the MusicBrainz collection from a list of Beets albums"""
-        collection = self.collection
+        try:
+            collection = self.collection
 
-        # Get a list of all the album IDs.
-        album_ids = [id_ for a in albums if UUID_PAT.match(id_ := a.mb_albumid)]
+            # Get a list of all the album IDs.
+            album_ids = [
+                id_ for a in albums if UUID_PAT.match(id_ := a.mb_albumid)
+            ]
 
-        # Submit to MusicBrainz.
-        self._log.info("Updating MusicBrainz collection {}...", collection.id)
-        collection.add_releases(album_ids)
-        if remove_missing:
-            lib_ids = {x.mb_albumid for x in lib.albums()}
-            albums_in_collection = {r["id"] for r in collection.releases}
-            collection.remove_releases(list(albums_in_collection - lib_ids))
+            # Submit to MusicBrainz.
+            self._log.info(
+                "Updating MusicBrainz collection {}...", collection.id
+            )
+            collection.add_releases(album_ids)
+            if remove_missing:
+                lib_ids = {x.mb_albumid for x in lib.albums()}
+                albums_in_collection = {r["id"] for r in collection.releases}
+                collection.remove_releases(list(albums_in_collection - lib_ids))
 
-        self._log.info("...MusicBrainz collection updated.")
+            self._log.info("...MusicBrainz collection updated.")
+        except BeetsHTTPError as exc:
+            self._log.error("Failed to update MusicBrainz collection: {}", exc)

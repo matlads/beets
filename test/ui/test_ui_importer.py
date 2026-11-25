@@ -1,41 +1,70 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests the TerminalImportSession. The tests are the same as in the
 
 test_importer module. But here the test importer inherits from
 ``TerminalImportSession``. So we test this class, too.
 """
 
+from unittest import mock
+
+from beets import importer
+from beets.autotag.hooks import TrackInfo
 from beets.test.helper import TerminalImportMixin
 from test import test_importer
 
 
-class NonAutotaggedImportTest(
-    TerminalImportMixin, test_importer.NonAutotaggedImportTest
+class TestNonAutotaggedImport(
+    TerminalImportMixin, test_importer.TestNonAutotaggedImport
 ):
     pass
 
 
-class ImportTest(TerminalImportMixin, test_importer.ImportTest):
+class TestImport(TerminalImportMixin, test_importer.TestImport):
     pass
 
 
 class ImportSingletonTest(
     TerminalImportMixin, test_importer.ImportSingletonTest
 ):
-    pass
+    def test_singleton_manual_search_updates_candidates(self):
+        self.importer.io.addinput("e")
+        self.importer.io.addinput("ManualArtist")
+        self.importer.io.addinput("ManualTrack")
+        self.importer.io.addinput("a")
+        self.importer.run()
+        assert not self.lib.albums()
+        assert self.lib.items().get().title == "ManualTrack"
+
+    def test_singleton_manual_id_updates_candidates(self):
+        recording_id = "12345678-1234-1234-1234-123456789abc"
+        track_info = TrackInfo(
+            title="IDTrack",
+            artist="IDArtist",
+            artist_id="some-artist-id",
+            track_id=recording_id,
+            length=1,
+            index=0,
+        )
+
+        with mock.patch(
+            "beets.metadata_plugins.tracks_for_ids", return_value=[track_info]
+        ) as lookup:
+            self.importer.io.addinput("i")
+            self.importer.io.addinput(recording_id)
+            self.importer.io.addinput("m")
+            self.importer.io.addinput("1")
+            self.importer.io.addinput("a")
+            self.importer.run()
+
+        lookup.assert_called_once_with([recording_id])
+
+        items = list(self.lib.items())
+        assert len(items) == 1
+        assert not self.lib.albums()
+
+        item = items[0]
+        assert item.title == "IDTrack"
+        assert item.artist == "IDArtist"
+        assert item.mb_trackid == recording_id
 
 
 class ImportTracksTest(TerminalImportMixin, test_importer.ImportTracksTest):
@@ -55,7 +84,30 @@ class ImportExistingTest(TerminalImportMixin, test_importer.ImportExistingTest):
 class ChooseCandidateTest(
     TerminalImportMixin, test_importer.ChooseCandidateTest
 ):
-    pass
+    def test_manual_search_updates_candidates(self):
+        self.importer.io.addinput("e")
+        self.importer.io.addinput("ManualArtist")
+        self.importer.io.addinput("ManualAlbum")
+        self.importer.io.addinput("m")
+        self.importer.io.addinput("1")
+        self.importer.io.addinput("a")
+        self.importer.run()
+        album = self.lib.albums().get()
+        assert "ManualAlbum" in album.album
+
+    def test_manual_id_updates_candidates(self):
+        album_info = self.matcher._make_album_match("IDArtist", "IDAlbum", 1)
+        with mock.patch(
+            "beets.metadata_plugins.albums_for_ids", return_value=[album_info]
+        ):
+            self.importer.io.addinput("i")
+            self.importer.io.addinput("custom_release_id")
+            self.importer.io.addinput("m")
+            self.importer.io.addinput("1")
+            self.importer.io.addinput("a")
+            self.importer.run()
+            album = self.lib.albums().get()
+            assert "IDAlbum" in album.album
 
 
 class GroupAlbumsImportTest(
@@ -68,3 +120,12 @@ class GlobalGroupAlbumsImportTest(
     TerminalImportMixin, test_importer.GlobalGroupAlbumsImportTest
 ):
     pass
+
+
+class TestImportDuplicateAlbumUpgrade(
+    TerminalImportMixin, test_importer.TestImportDuplicateAlbumUpgrade
+):
+    def setup_beets(self):
+        super().setup_beets()
+        self.config["import"]["duplicate_action"] = "ask"
+        self.importer.add_duplicate_action(importer.DuplicateAction.UPGRADE)

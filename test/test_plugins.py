@@ -1,23 +1,7 @@
-# This file is part of beets.
-# Copyright 2016, Thomas Scholtes.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
-
 import importlib
 import itertools
-import logging
-import os
 import pkgutil
+import subprocess
 import sys
 from typing import ClassVar
 from unittest.mock import ANY, Mock, patch
@@ -25,28 +9,24 @@ from unittest.mock import ANY, Mock, patch
 import pytest
 from mediafile import MediaFile
 
-from beets import config, plugins, ui
+from beets import plugins, ui
+from beets.autotag.match import Proposal, Recommendation
 from beets.dbcore import types
-from beets.importer import (
-    Action,
-    ArchiveImportTask,
-    SentinelImportTask,
-    SingletonImportTask,
-)
+from beets.importer import Action, SingletonImportTask
 from beets.library import Item
-from beets.test import helper
 from beets.test.helper import (
+    RUNNING_IN_CI,
     AutotagStub,
     ImportHelper,
     IOMixin,
     PluginMixin,
-    PluginTestCase,
+    PluginTestHelper,
     TerminalImportMixin,
 )
-from beets.util import PromptChoice, displayable_path, syspath
+from beets.util import PromptChoice, displayable_path
 
 
-class TestPluginRegistration(IOMixin, PluginTestCase):
+class TestPluginRegistration(IOMixin, PluginTestHelper):
     class RatingPlugin(plugins.BeetsPlugin):
         item_types: ClassVar[dict[str, types.Type]] = {
             "rating": types.Float(),
@@ -62,9 +42,8 @@ class TestPluginRegistration(IOMixin, PluginTestCase):
             if tags["artist"] == "XXX":
                 tags["artist"] = "YYY"
 
-    def setUp(self):
-        super().setUp()
-
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         self.register_plugin(self.RatingPlugin)
 
     def test_field_type_registered(self):
@@ -88,7 +67,7 @@ class TestPluginRegistration(IOMixin, PluginTestCase):
 
         item.write()
 
-        assert MediaFile(syspath(item.path)).artist == "YYY"
+        assert MediaFile(item.filepath).artist == "YYY"
 
     def test_multi_value_flex_field_type(self):
         item = Item(path="apath", artist="aaa")
@@ -99,31 +78,35 @@ class TestPluginRegistration(IOMixin, PluginTestCase):
         assert out == "one; two; three\n"
 
 
-class PluginImportTestCase(ImportHelper, PluginTestCase):
-    def setUp(self):
-        super().setUp()
+class PluginImportHelper(PluginMixin, ImportHelper):
+    def setup_beets(self):
+        super().setup_beets()
         self.prepare_album_for_import(2)
 
 
-class EventsTest(PluginImportTestCase):
-    def test_import_task_created(self):
+class TestEvents(PluginImportHelper):
+    def test_import_task_created(self, caplog):
         self.importer = self.setup_importer(pretend=True)
 
-        with helper.capture_log() as logs:
+        with caplog.at_level("DEBUG"):
             self.importer.run()
 
         # Exactly one event should have been imported (for the album).
         # Sentinels do not get emitted.
-        assert logs.count("Sending event: import_task_created") == 1
+        assert caplog.text.count("Sending event: import_task_created") == 1
 
-        logs = [line for line in logs if not line.startswith("Sending event:")]
+        logs = [
+            msg
+            for msg in caplog.messages
+            if not msg.startswith("Sending event:")
+        ]
         assert logs == [
-            f"Album: {displayable_path(os.path.join(self.import_dir, b'album'))}",
+            f"Album: {self.import_path / 'album'}",
             f"  {displayable_path(self.import_media[0].path)}",
             f"  {displayable_path(self.import_media[1].path)}",
         ]
 
-    def test_import_task_created_with_plugin(self):
+    def test_import_task_created_with_plugin(self, caplog):
         class ToSingletonPlugin(plugins.BeetsPlugin):
             def __init__(self):
                 super().__init__()
@@ -133,39 +116,34 @@ class EventsTest(PluginImportTestCase):
                 )
 
             def import_task_created_event(self, session, task):
-                if (
-                    isinstance(task, SingletonImportTask)
-                    or isinstance(task, SentinelImportTask)
-                    or isinstance(task, ArchiveImportTask)
-                ):
-                    return task
-
-                new_tasks = []
-                for item in task.items:
-                    new_tasks.append(SingletonImportTask(task.toppath, item))
-
-                return new_tasks
+                return [
+                    SingletonImportTask(task.toppath, i) for i in task.items
+                ]
 
         to_singleton_plugin = ToSingletonPlugin
         self.register_plugin(to_singleton_plugin)
 
         self.importer = self.setup_importer(pretend=True)
 
-        with helper.capture_log() as logs:
+        with caplog.at_level("DEBUG"):
             self.importer.run()
 
         # Exactly one event should have been imported (for the album).
         # Sentinels do not get emitted.
-        assert logs.count("Sending event: import_task_created") == 1
+        assert caplog.text.count("Sending event: import_task_created") == 1
 
-        logs = [line for line in logs if not line.startswith("Sending event:")]
+        logs = [
+            msg
+            for msg in caplog.messages
+            if not msg.startswith("Sending event:")
+        ]
         assert logs == [
             f"Singleton: {displayable_path(self.import_media[0].path)}",
             f"Singleton: {displayable_path(self.import_media[1].path)}",
         ]
 
 
-class ListenersTest(PluginTestCase):
+class TestListeners(PluginTestHelper):
     def test_register(self):
         class DummyPlugin(plugins.BeetsPlugin):
             def __init__(self):
@@ -267,21 +245,19 @@ class ListenersTest(PluginTestCase):
         plugins.send("event9", foo=5)
 
 
-class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
-    def setUp(self):
-        super().setUp()
+class TestPromptChoices(TerminalImportMixin, PluginImportHelper):
+    @pytest.fixture(autouse=True)
+    def setup_prompt_choice(self, io):
         self.setup_importer()
         self.matcher = AutotagStub(AutotagStub.IDENT).install()
-        self.addCleanup(self.matcher.restore)
         # keep track of ui.input_option() calls
         self.input_options_patcher = patch(
             "beets.ui.input_options", side_effect=ui.input_options
         )
         self.mock_input_options = self.input_options_patcher.start()
-
-    def tearDown(self):
-        super().tearDown()
+        yield
         self.input_options_patcher.stop()
+        self.matcher.restore()
 
     def test_plugin_choices_in_ui_input_options_album(self):
         """Test the presence of plugin choices on the prompt (album)."""
@@ -296,7 +272,7 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             def return_choices(self, session, task):
                 return [
                     PromptChoice("f", "Foo", None),
-                    PromptChoice("r", "baR", None),
+                    PromptChoice("z", "baZ", None),
                 ]
 
         self.register_plugin(DummyPlugin)
@@ -308,11 +284,12 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             "Use as-is",
             "as Tracks",
             "Group albums",
+            "Rescan directory",
             "Enter search",
             "enter Id",
             "aBort",
             "Foo",
-            "baR",
+            "baZ",
         )
 
         self.importer.add_choice(Action.SKIP)
@@ -321,7 +298,7 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             opts, default="a", require=ANY
         )
 
-    def test_plugin_choices_in_ui_input_options_singleton(self):
+    def test_plugin_choices_in_ui_input_options_singleton(self, config):
         """Test the presence of plugin choices on the prompt (singleton)."""
 
         class DummyPlugin(plugins.BeetsPlugin):
@@ -385,6 +362,7 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             "Use as-is",
             "as Tracks",
             "Group albums",
+            "Rescan directory",
             "Enter search",
             "enter Id",
             "aBort",
@@ -421,6 +399,7 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             "Use as-is",
             "as Tracks",
             "Group albums",
+            "Rescan directory",
             "Enter search",
             "enter Id",
             "aBort",
@@ -465,6 +444,7 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             "Use as-is",
             "as Tracks",
             "Group albums",
+            "Rescan directory",
             "Enter search",
             "enter Id",
             "aBort",
@@ -480,6 +460,41 @@ class PromptChoicesTest(TerminalImportMixin, PluginImportTestCase):
             opts, default="a", require=ANY
         )
 
+    def test_plugin_callback_sees_shown_candidate(self):
+        """Callbacks get the candidate on screen as `task.selected_match`."""
+        seen = []
+
+        class DummyPlugin(plugins.BeetsPlugin):
+            def __init__(self):
+                super().__init__()
+                self.register_listener(
+                    "before_choose_candidate", self.return_choices
+                )
+
+            def return_choices(self, session, task):
+                return [
+                    PromptChoice("f", "Foo", self.foo),
+                    PromptChoice("z", "Zero", self.empty),
+                ]
+
+            def foo(self, session, task):
+                match = task.selected_match
+                seen.append(match and task.candidates.index(match))
+
+            def empty(self, session, task):
+                return Proposal([], Recommendation.none)
+
+        self.register_plugin(DummyPlugin)
+        self.matcher.matching = AutotagStub.GOOD
+
+        # Foo on the list; pick 1; Foo on it (back to the list); pick 2;
+        # Foo on it; pick 1; Zero (no candidates left); Foo; Skip
+        for sel in ("f", "1", "f", "2", "f", "1", "z", "f", "s"):
+            self.io.addinput(sel)
+        self.importer.run()
+
+        assert seen == [None, 0, 1, None]
+
 
 def get_available_plugins():
     """Get all available plugins in the beetsplug namespace."""
@@ -492,7 +507,7 @@ def get_available_plugins():
     ]
 
 
-class TestImportPlugin(PluginMixin):
+class TestImportPlugin:
     @pytest.fixture(params=get_available_plugins())
     def plugin_name(self, request):
         """Fixture to provide the name of each available plugin."""
@@ -505,35 +520,27 @@ class TestImportPlugin(PluginMixin):
 
         return name
 
-    def unload_plugins(self):
-        """Unimport plugins before each test to avoid conflicts."""
-        super().unload_plugins()
-        for mod in list(sys.modules):
-            if mod.startswith("beetsplug."):
-                del sys.modules[mod]
-
-    @pytest.fixture(autouse=True)
-    def cleanup(self):
-        """Ensure plugins are unimported before and after each test."""
-        self.unload_plugins()
-        yield
-        self.unload_plugins()
-
     @pytest.mark.skipif(
-        os.environ.get("GITHUB_ACTIONS") != "true",
+        not RUNNING_IN_CI,
         reason=(
             "Requires all dependencies to be installed, which we can't"
             " guarantee in the local environment."
         ),
     )
-    def test_import_plugin(self, caplog, plugin_name):
-        """Test that a plugin is importable without an error."""
-        caplog.set_level(logging.WARNING)
-        self.load_plugins(plugin_name)
-
-        assert "PluginImportError" not in caplog.text, (
-            f"Plugin '{plugin_name}' has issues during import."
+    def test_import_plugin(self, plugin_name):
+        """Check that each plugin imports in a fresh interpreter."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib, sys; importlib.import_module(sys.argv[1])",
+                f"beetsplug.{plugin_name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
+        assert result.returncode == 0, result.stdout + result.stderr
 
 
 class TestDeprecationCopy:
@@ -558,11 +565,10 @@ class TestDeprecationCopy:
 
 class TestMusicBrainzPluginLoading:
     @pytest.fixture(autouse=True)
-    def config(self):
-        _config = config
-        _config.sources = []
-        _config.read(user=False, defaults=True)
-        return _config
+    def config(self, config):
+        config.sources = []
+        config.read(user=False, defaults=True)
+        return config
 
     def test_default(self):
         assert "musicbrainz" in plugins.get_plugin_names()

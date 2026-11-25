@@ -95,6 +95,13 @@ You can also use this plugin together with the :doc:`mpdupdate`, in order to
 automatically notify MPD of the playlist change, by adding ``mpdupdate`` to the
 ``plugins`` line in your config file *after* the ``smartplaylist`` plugin.
 
+Plugin Event
+------------
+
+After writing updated playlist files, this plugin sends the
+``smartplaylist_update`` event. See :ref:`plugin_events` for its listener
+parameters. The event is not sent in pretend mode.
+
 While working on smart playlist queries in the beets configuration it can help
 to use the ``--pretend`` option to find out if the edits work as expected before
 writing changes. To list the tracks matching the query, switch to the DEBUG log
@@ -159,7 +166,9 @@ options are:
   ``false``.
 - **relative_to**: Generate paths in the playlist files relative to a base
   directory. If you intend to use this plugin to generate playlists for MPD,
-  point this to your MPD music directory. Default: Use absolute paths.
+  point this to your MPD music directory. Instead of a fixed path, it can also
+  be set to ``library`` to use the library directory. Default: Use absolute
+  paths.
 - **forward_slash**: Forces forward slashes in the generated playlist files. If
   you intend to use this plugin to generate playlists for MPD on Windows, set
   this to yes. Default: Use system separator.

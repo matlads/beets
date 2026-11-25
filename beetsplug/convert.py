@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Jakob Schnitzer.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Converts tracks or albums to external directory"""
 
 from __future__ import annotations
@@ -23,8 +9,9 @@ import subprocess
 import tempfile
 import threading
 from functools import cached_property
+from pathlib import Path
 from string import Template
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
 import mediafile
 from confuse import ConfigTypeError, Optional
@@ -33,21 +20,30 @@ from beets import plugins, ui, util
 from beets.exceptions import UserError
 from beets.library import Item, parse_query_string
 from beets.plugins import BeetsPlugin
-from beets.util import par_map
+from beets.util import pipeline
 from beets.util.artresizer import ArtResizer
 from beets.util.m3u import M3UFile
+from beets.util.pathformats import get_path_formats
 from beetsplug._utils import art
 
 if TYPE_CHECKING:
-    import optparse
+    from collections.abc import Iterable
 
     from beets.importer import ImportSession, ImportTask
     from beets.library import Album, Library
-    from beets.util.functemplate import Template as FuncTemplate
+    from beets.util.pathformats import PathFormat
 
 _fs_lock = threading.Lock()
 # Keep track of temporary transcoded files for deletion.
 _temp_files: list[bytes] = []
+
+
+class ConvertCLIOpts(Protocol):
+    album: bool
+    keep_new: bool
+    limit: int | None
+    yes: bool | None
+
 
 # Some convenient alternate names for formats.
 ALIASES = {"windows media": "wma", "vorbis": "ogg"}
@@ -119,6 +115,7 @@ class ConvertPlugin(BeetsPlugin):
                 "delete_originals": False,
                 "playlist": None,
                 "force": False,
+                "refresh": False,
                 "keep_new": False,
             }
         )
@@ -145,6 +142,14 @@ class ConvertPlugin(BeetsPlugin):
                 "change the number of threads, defaults to maximum available"
                 " processors"
             ),
+        )
+        cmd.parser.add_option(
+            "-r",
+            "--refresh",
+            action="store_true",
+            dest="refresh",
+            default=self.config["refresh"].get(),
+            help="reconvert if original file is newer than converted file",
         )
         cmd.parser.add_option(
             "-k",
@@ -195,14 +200,14 @@ class ConvertPlugin(BeetsPlugin):
             "--playlist",
             action="store",
             default=self.config["playlist"].get(),
-            help="""create an m3u8 playlist file containing
-                              the converted files. The playlist file will be
-                              saved below the destination directory, thus
-                              PLAYLIST could be a file name or a relative path.
-                              To ensure a working playlist when transferred to
-                              a different computer, or opened from an external
-                              drive, relative paths pointing to media files
-                              will be used.""",
+            help=(
+                "create an m3u8 playlist file containing the converted files."
+                " The playlist file will be saved below the destination"
+                " directory, thus PLAYLIST could be a file name or a relative"
+                " path. To ensure a working playlist when transferred to a"
+                " different computer, or opened from an external drive,"
+                " relative paths pointing to media files will be used."
+            ),
         )
         cmd.parser.add_option(
             "-F",
@@ -215,6 +220,7 @@ class ConvertPlugin(BeetsPlugin):
             ),
         )
         cmd.parser.add_album_option()
+        cmd.parser.add_limit_option(flags=("--limit",))
         cmd.func = self.convert_func
         return [cmd]
 
@@ -230,8 +236,8 @@ class ConvertPlugin(BeetsPlugin):
         return self.config["threads"].get(int)
 
     @cached_property
-    def path_formats(self) -> dict[str, FuncTemplate]:
-        return ui.get_path_formats(self.config["paths"] or None)
+    def path_formats(self) -> list[PathFormat]:
+        return get_path_formats(self.config["paths"])
 
     @cached_property
     def fmt(self) -> str:
@@ -251,6 +257,10 @@ class ConvertPlugin(BeetsPlugin):
     @cached_property
     def force(self) -> bool:
         return self.config["force"].get(bool)
+
+    @cached_property
+    def refresh(self) -> bool:
+        return self.config["refresh"].get(bool)
 
     @cached_property
     def hardlink(self) -> bool:
@@ -291,7 +301,7 @@ class ConvertPlugin(BeetsPlugin):
 
     def auto_convert(self, session: ImportSession, task: ImportTask) -> None:
         if self.config["auto"]:
-            par_map(
+            util.par_map(
                 lambda item: self.convert_on_import(session.lib, item),
                 task.imported_items(),
             )
@@ -371,8 +381,7 @@ class ConvertPlugin(BeetsPlugin):
         if no_convert_query:
             query, _ = parse_query_string(no_convert_query, Item)
             return query.match(item)
-        else:
-            return False
+        return False
 
     def should_transcode(self, item: Item) -> bool:
         """Determine whether the item should be transcoded as part of
@@ -394,15 +403,33 @@ class ConvertPlugin(BeetsPlugin):
             return True
         return self.fmt != item.format.lower()
 
-    @util.pipeline.mutator_stage
+    def get_item_destination(self, item: Item) -> bytes:
+        extension = (
+            os.fsdecode(self.command.ext)
+            if (
+                self.should_transcode(item)
+                and not self.config["keep_new"].get(bool)
+            )
+            else None
+        )
+        return item.destination(
+            basedir=self.dest,
+            path_formats=self.path_formats,
+            extension=extension,
+        )
+
+    @pipeline.mutator_stage
     def convert_item(self, keep_new: bool, item: Item) -> None:
         """Convert an Item from the library."""
-        pretend, link, hardlink = self.pretend, self.link, self.hardlink
+        pretend, link, hardlink, refresh = (
+            self.pretend,
+            self.link,
+            self.hardlink,
+            self.refresh,
+        )
         command, ext = self.command
 
-        dest = item.destination(
-            basedir=self.dest, path_formats=self.path_formats
-        )
+        dest = self.get_item_destination(item)
 
         # Ensure that desired item is readable before processing it. Needed
         # to avoid any side-effect of the conversion (linking, keep_new,
@@ -427,6 +454,44 @@ class ConvertPlugin(BeetsPlugin):
                 dest = replace_ext(dest, ext)
             converted = dest
 
+        # If the destination file exists, we have to choose between:
+        # 1) Skipping current conversion
+        # 2) Removing the target file to start a fresh conversion
+        if os.path.exists(util.syspath(dest)):
+            # Test to skip the conversion, whether because:
+            # 1) `refresh` is false (default)
+            # 2) `keep_new` is true (incompatible with `refresh`)
+            # 3) The original file is older than the destination file
+            if (
+                not refresh
+                or keep_new
+                or os.path.getmtime(item.path) <= os.path.getmtime(dest)
+            ):
+                self._log.info(
+                    "Skipping {.filepath} (destination file exists)", item
+                )
+                if keep_new and refresh:
+                    self._log.debug(
+                        "Skipping refresh: not supported with keep_new"
+                    )
+                return
+            # If reached, `refresh` is true, `keep_new` is false, and original file
+            # is newer than the destination file: we should consider deleting the
+            # existing destination files. If we pretend to convert files, only inform
+            # user about what would be removed without removing anything.
+            if pretend:
+                self._log.info(
+                    "Pretend to remove {0} (original file modified)",
+                    util.displayable_path(dest),
+                )
+            # Otherwise, actually remove the destination file
+            else:
+                self._log.info(
+                    "Removing {0} (original file modified)",
+                    util.displayable_path(dest),
+                )
+                util.remove(dest)
+
         # Ensure that only one thread tries to create directories at a
         # time. (The existence check is not atomic with the directory
         # creation inside this function.)
@@ -434,14 +499,12 @@ class ConvertPlugin(BeetsPlugin):
             with _fs_lock:
                 util.mkdirall(dest)
 
-        if os.path.exists(util.syspath(dest)):
-            self._log.info("Skipping {.filepath} (target file exists)", item)
-            return
-
         if keep_new:
             if pretend:
                 self._log.info(
-                    "mv {.filepath} {}", item, util.displayable_path(original)
+                    "Pretend to move {.filepath} to {}",
+                    item,
+                    util.displayable_path(original),
                 )
             else:
                 self._log.info("Moving to {}", util.displayable_path(original))
@@ -484,7 +547,9 @@ class ConvertPlugin(BeetsPlugin):
         if pretend:
             return
 
-        id3v23 = self.config["id3v23"].as_choice([True, False, "inherit"])
+        id3v23: bool | Literal["inherit"] | None = self.config[
+            "id3v23"
+        ].as_choice([True, False, "inherit"])
         if id3v23 == "inherit":
             id3v23 = None
 
@@ -501,15 +566,15 @@ class ConvertPlugin(BeetsPlugin):
 
         if self.config["embed"] and not linked:
             album = item._cached_album
-            if album and album.artpath:
-                maxwidth = self._get_art_resize(album.artpath)
+            if album and (path := album.art_filepath):
+                maxwidth = self._get_art_resize(path)
                 self._log.debug(
                     "embedding album art from {.art_filepath}", album
                 )
                 art.embed_item(
                     self._log,
                     item,
-                    album.artpath,
+                    path,
                     maxwidth,
                     itempath=converted,
                     id3v23=id3v23,
@@ -526,7 +591,15 @@ class ConvertPlugin(BeetsPlugin):
         """Copies or converts the associated cover art of the album. Album must
         have at least one track.
         """
-        if not album or not album.artpath:
+        if not album or not album.artpath or not album.art_filepath:
+            return
+
+        # The stored art path may point to a missing file (e.g. the cover
+        # lives in the album's root directory rather than a per-disc one).
+        if not os.path.isfile(util.syspath(album.artpath)):
+            self._log.info(
+                "Skipping {.art_filepath} (source file not found)", album
+            )
             return
 
         album_item = album.items().get()
@@ -536,9 +609,7 @@ class ConvertPlugin(BeetsPlugin):
 
         # Get the destination of the first item (track) of the album, we use
         # this function to format the path accordingly to path_formats.
-        dest = album_item.destination(
-            basedir=self.dest, path_formats=self.path_formats
-        )
+        dest = self.get_item_destination(album_item)
 
         # Remove item from the path.
         dest = os.path.join(*util.components(dest)[:-1])
@@ -552,33 +623,31 @@ class ConvertPlugin(BeetsPlugin):
 
         if os.path.exists(util.syspath(dest)):
             self._log.info(
-                "Skipping {.art_filepath} (target file exists)", album
+                "Skipping {.art_filepath} (destination file exists)", album
             )
             return
 
+        dest_path = Path(os.fsdecode(dest))
         # Decide whether we need to resize the cover-art image.
-        maxwidth = self._get_art_resize(album.artpath)
+        maxwidth = self._get_art_resize(album.art_filepath)
 
         # Either copy or resize (while copying) the image.
         if maxwidth is not None:
             self._log.info(
                 "Resizing cover art from {.art_filepath} to {}",
                 album,
-                util.displayable_path(dest),
+                dest_path,
             )
             if not pretend:
-                ArtResizer.shared.resize(maxwidth, album.artpath, dest)
+                ArtResizer.shared.resize(
+                    maxwidth, album.art_filepath, dest_path
+                )
         else:
             link, hardlink = self.link, self.hardlink
             if pretend:
                 msg = "ln" if hardlink else ("ln -s" if link else "cp")
 
-                self._log.info(
-                    "{} {.art_filepath} {}",
-                    msg,
-                    album,
-                    util.displayable_path(dest),
-                )
+                self._log.info("{} {.art_filepath} {}", msg, album, dest_path)
             else:
                 msg = (
                     "Hardlinking"
@@ -590,7 +659,7 @@ class ConvertPlugin(BeetsPlugin):
                     "{} cover art from {.art_filepath} to {}",
                     msg,
                     album,
-                    util.displayable_path(dest),
+                    dest_path,
                 )
                 if hardlink:
                     util.hardlink(album.artpath, dest)
@@ -600,19 +669,19 @@ class ConvertPlugin(BeetsPlugin):
                     util.copy(album.artpath, dest)
 
     def convert_func(
-        self, lib: Library, opts: optparse.Values, args: list[str]
+        self, lib: Library, opts: ConvertCLIOpts, args: list[str]
     ) -> None:
         self.config.set(vars(opts))
-        dest, pretend = self.dest, self.pretend
+        pretend = self.pretend
 
         if opts.album:
-            albums = lib.albums(args)
+            albums = lib.albums(args, limit=opts.limit)
             items = [i for a in albums for i in a.items()]
             if not pretend:
                 for a in albums:
                     ui.print_(format(a, ""))
         else:
-            items = list(lib.items(args))
+            items = list(lib.items(args, limit=opts.limit))
             if not pretend:
                 for i in items:
                     ui.print_(format(i, ""))
@@ -637,9 +706,7 @@ class ConvertPlugin(BeetsPlugin):
             pl_dir = os.path.dirname(pl_normpath)
             items_paths = []
             for item in items:
-                item_path = item.destination(
-                    basedir=dest, path_formats=self.path_formats
-                )
+                item_path = self.get_item_destination(item)
 
                 # When keeping new files in the library, destination paths
                 # keep original files and extensions.
@@ -697,7 +764,7 @@ class ConvertPlugin(BeetsPlugin):
                 )
                 util.remove(source_path, False)
 
-    def _get_art_resize(self, artpath: bytes) -> int | None:
+    def _get_art_resize(self, artpath: Path) -> int | None:
         """For a given piece of album art, determine whether or not it needs
         to be resized according to the user's settings. If so, returns the
         new size. If not, returns None.
@@ -724,10 +791,9 @@ class ConvertPlugin(BeetsPlugin):
                     util.remove(path)
                 _temp_files.remove(path)
 
-    def _parallel_convert(self, items: list[Item], keep_new: bool):
+    def _parallel_convert(self, items: Iterable[Item], keep_new: bool) -> None:
         """Run the convert_item function for every items on as many thread as
         defined in threads
         """
         convert = [self.convert_item(keep_new) for _ in range(self.threads)]
-        pipe = util.pipeline.Pipeline([iter(items), convert])
-        pipe.run_parallel()
+        pipeline.Pipeline([iter(items), convert]).run_parallel()

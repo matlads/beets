@@ -1,18 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Pedro Silva.
-# Copyright 2017, Quentin Young.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """List missing tracks."""
 
 from __future__ import annotations
@@ -24,16 +9,18 @@ import requests
 
 from beets import config, metadata_plugins
 from beets.dbcore import types
-from beets.library import Item
+from beets.library import Album, Item
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand, print_
 
 from ._utils.musicbrainz import MusicBrainzAPIMixin
 
 if TYPE_CHECKING:
+    import optparse
     from collections.abc import Iterator
 
-    from beets.library import Album, Library
+    from beets.autotag import AlbumInfo, TrackInfo
+    from beets.library import Library
 
 # Valid MusicBrainz release types for filtering release groups
 VALID_RELEASE_TYPES = [
@@ -57,12 +44,14 @@ VALID_RELEASE_TYPES = [
 MB_ARTIST_QUERY = r"mb_albumartistid::^\w{8}-\w{4}-\w{4}-\w{4}-\w{12}$"
 
 
-def _missing_count(album):
+def _missing_count(album: Album) -> bool | int:
     """Return number of missing items in `album`."""
     return (album.albumtotal or 0) - len(album.items())
 
 
-def _item(track_info, album_info, album_id):
+def _item(
+    track_info: TrackInfo, album_info: AlbumInfo, album_id: int | None
+) -> Item:
     """Build and return `item` from `track_info` and `album info`
     objects. `item` is missing what fields cannot be obtained from
     MusicBrainz alone (encoder, rg_track_gain, rg_track_peak,
@@ -74,41 +63,39 @@ def _item(track_info, album_info, album_id):
     a = album_info
 
     return Item(
-        **{
-            "album_id": album_id,
-            "album": a.album,
-            "albumartist": a.artist,
-            "albumartist_credit": a.artist_credit,
-            "albumartist_sort": a.artist_sort,
-            "albumdisambig": a.albumdisambig,
-            "albumstatus": a.albumstatus,
-            "albumtype": a.albumtype,
-            "artist": t.artist,
-            "artist_credit": t.artist_credit,
-            "artist_sort": t.artist_sort,
-            "asin": a.asin,
-            "catalognum": a.catalognum,
-            "comp": a.va,
-            "country": a.country,
-            "day": a.day,
-            "disc": t.medium,
-            "disctitle": t.disctitle,
-            "disctotal": a.mediums,
-            "label": a.label,
-            "language": a.language,
-            "length": t.length,
-            "mb_albumid": a.album_id,
-            "mb_artistid": t.artist_id,
-            "mb_releasegroupid": a.releasegroup_id,
-            "mb_trackid": t.track_id,
-            "media": t.media,
-            "month": a.month,
-            "script": a.script,
-            "title": t.title,
-            "track": t.index,
-            "tracktotal": len(a.tracks),
-            "year": a.year,
-        }
+        album_id=album_id,
+        album=a.album,
+        albumartist=a.artist,
+        albumartist_credit=a.artist_credit,
+        albumartist_sort=a.artist_sort,
+        albumdisambig=a.albumdisambig,
+        albumstatus=a.albumstatus,
+        albumtype=a.albumtype,
+        artist=t.artist,
+        artist_credit=t.artist_credit,
+        artist_sort=t.artist_sort,
+        asin=a.asin,
+        catalognum=a.catalognum,
+        comp=a.va,
+        country=a.country,
+        day=a.day,
+        disc=t.medium,
+        disctitle=t.disctitle,
+        disctotal=a.mediums,
+        label=a.label,
+        language=a.language,
+        length=t.length,
+        mb_albumid=a.album_id,
+        mb_artistid=t.artist_id,
+        mb_releasegroupid=a.releasegroup_id,
+        mb_trackid=t.track_id,
+        media=t.media,
+        month=a.month,
+        script=a.script,
+        title=t.title,
+        track=t.index,
+        tracktotal=len(a.tracks),
+        year=a.year,
     )
 
 
@@ -117,7 +104,7 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
 
     album_types: ClassVar[dict[str, types.Type]] = {"missing": types.INTEGER}
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.config.add(
@@ -129,7 +116,7 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
             }
         )
 
-        self.album_template_fields["missing"] = _missing_count
+        self.album_template_fields["missing"] = lambda a: str(_missing_count(a))
 
         self._command = Subcommand("missing", help=__doc__, aliases=["miss"])
         self._command.parser.add_option(
@@ -166,23 +153,26 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
             ),
         )
         self._command.parser.add_format_option()
+        self._command.parser.add_limit_option()
 
-    def commands(self):
-        def _miss(lib, opts, args):
+    def commands(self) -> list[Subcommand]:
+        def _miss(lib: Library, opts: optparse.Values, args: list[str]) -> None:
             self.config.set_args(opts)
             albms = self.config["album"].get()
 
             helper = self._missing_albums if albms else self._missing_tracks
-            helper(lib, args)
+            helper(lib, args, opts.limit)
 
         self._command.func = _miss
         return [self._command]
 
-    def _missing_tracks(self, lib, query):
+    def _missing_tracks(
+        self, lib: Library, query: list[str], limit: int | None
+    ) -> None:
         """Print a listing of tracks missing from each album in the library
         matching query.
         """
-        albums = lib.albums(query)
+        albums = lib.albums(query, limit=limit)
 
         count = self.config["count"].get()
         total = self.config["total"].get()
@@ -205,7 +195,9 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
                 for item in self._missing(album):
                     print_(format(item, fmt))
 
-    def _missing_albums(self, lib: Library, query: list[str]) -> None:
+    def _missing_albums(
+        self, lib: Library, query: list[str], limit: int | None
+    ) -> None:
         """Print a listing of albums missing from each artist in the library
         matching query.
         """
@@ -213,7 +205,7 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
 
         # build dict mapping artist to set of their release group ids in library
         album_ids_by_artist = defaultdict(set)
-        for album in lib.albums(query):
+        for album in lib.albums(query, limit=limit):
             # TODO(@snejus): Some releases have different `albumartist` for the
             # same `mb_albumartistid`. Since we're grouping by the combination
             # of these two fields, we end up processing the same
@@ -228,6 +220,7 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
         for rt in self.config["release_types"].as_str_seq():
             release_types.extend(rt.split(","))
         calculating_total = self.config["total"].get()
+        fmt = config["format_album"].get()
         for (artist, artist_id), album_ids in album_ids_by_artist.items():
             try:
                 resp = self.mb_api.browse_release_groups(
@@ -242,17 +235,22 @@ class MissingPlugin(MusicBrainzAPIMixin, BeetsPlugin):
                 )
                 continue
 
-            missing_titles = [
-                f"{artist} - {rg['title']}"
+            missing_albums = [
+                Album(
+                    albumartist=artist,
+                    album=rg["title"],
+                    mb_releasegroupid=rg["id"],
+                    albumtype=(rg.get("primary_type") or "").lower(),
+                )
                 for rg in resp
                 if rg["id"] not in album_ids
             ]
 
             if calculating_total:
-                total_missing += len(missing_titles)
+                total_missing += len(missing_albums)
             else:
-                for title in missing_titles:
-                    print(title)
+                for album in missing_albums:
+                    print_(format(album, fmt))
 
         if calculating_total:
             print(total_missing)

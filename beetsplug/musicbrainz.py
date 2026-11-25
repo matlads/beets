@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Searches for albums in the MusicBrainz database."""
 
 from __future__ import annotations
@@ -20,14 +6,13 @@ from collections import defaultdict
 from contextlib import suppress
 from functools import cached_property
 from itertools import product
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 from urllib.parse import urljoin
 
 from confuse.exceptions import NotFoundError
-from typing_extensions import NotRequired
 
 from beets import config, plugins, util
-from beets.autotag.hooks import AlbumInfo, TrackInfo
+from beets.autotag import AlbumInfo, TrackInfo
 from beets.metadata_plugins import IDResponse, SearchApiMetadataSourcePlugin
 from beets.util.deprecation import deprecate_for_user
 from beets.util.id_extractors import extract_release_id
@@ -71,6 +56,7 @@ FIELDS_TO_MB_KEYS = {
 
 BROWSE_INCLUDES = [
     "artist-credits",
+    "aliases",
     "work-rels",
     "artist-rels",
     "recording-rels",
@@ -276,6 +262,10 @@ class MusicBrainzPlugin(
     def ignore_video_tracks(self) -> bool:
         return config["match"]["ignore_video_tracks"].get(bool)
 
+    @cached_property
+    def aliases_as_credits(self) -> bool:
+        return self.config["aliases_as_credits"].get(bool)
+
     def __init__(self) -> None:
         """Set up the python-musicbrainz-ngs module according to settings
         from the beets configuration. This should be called at startup.
@@ -293,6 +283,7 @@ class MusicBrainzPlugin(
                     "tidal": False,
                 },
                 "extra_tags": [],
+                "aliases_as_credits": False,
             }
         )
         # TODO: Remove in 3.0.0
@@ -306,8 +297,9 @@ class MusicBrainzPlugin(
                 "'musicbrainz.search_limit'",
             )
 
-    @staticmethod
-    def _parse_artist_credits(artist_credits: list[ArtistCredit]) -> ArtistInfo:
+    def _parse_artist_credits(
+        self, artist_credits: list[ArtistCredit]
+    ) -> ArtistInfo:
         """Normalize MusicBrainz artist-credit data into tag-friendly fields.
 
         MusicBrainz represents credits as a sequence of credited artists, each
@@ -335,7 +327,9 @@ class MusicBrainzPlugin(
             artists_ids.append(el["artist"]["id"])
             alias = _preferred_alias(el["artist"].get("aliases", []))
             artist_object = alias or el["artist"]
-            credit_artist_object = alias or el
+            credit_artist_object = (
+                alias if (alias and self.aliases_as_credits) else el
+            )
 
             joinphrase = el["joinphrase"]
             for name, parts, multi in (
@@ -567,12 +561,6 @@ class MusicBrainzPlugin(
         if not self.ignore_data_tracks:
             all_tracks.extend(medium.get("data_tracks", []))
 
-        medium_data = {
-            "medium": medium["position"],
-            "medium_total": medium["track_count"],
-            "disctitle": medium["title"],
-            "media": medium["format"],
-        }
         valid_tracks = [
             t
             for t in all_tracks
@@ -583,6 +571,12 @@ class MusicBrainzPlugin(
                 and not (self.ignore_video_tracks and t["recording"]["video"])
             )
         ]
+        medium_data = {
+            "medium": medium["position"],
+            "medium_total": len(valid_tracks),
+            "disctitle": medium["title"],
+            "media": medium["format"],
+        }
         for track in valid_tracks:
             # make a copy since we need to modify it with track-level overrides
             recording = track["recording"].copy()
@@ -633,6 +627,20 @@ class MusicBrainzPlugin(
                         track["recording"]["id"]
                     ]
 
+    @staticmethod
+    def _album_media(medias: set[str | None]) -> str | None:
+        """Return the release's media for the album.
+
+        The media's shared format, else their common base when they differ only
+        in a parenthetical (the layers of a hybrid SACD or the sides of
+        a DualDisc), else ``Media``.
+        """
+        if len(medias) == 1:
+            return medias.pop()
+
+        bases = {m.partition(" (")[0] if m else None for m in medias}
+        return bases.pop() if len(bases) == 1 else "Media"
+
     def album_info(self, release: Release) -> AlbumInfo:
         """Takes a MusicBrainz release result dictionary and returns a beets
         AlbumInfo object containing the interesting data about that release.
@@ -656,11 +664,7 @@ class MusicBrainzPlugin(
             album=release_title,
             album_id=release["id"],
             tracks=track_infos,
-            media=(
-                medias.pop()
-                if len(medias := {t.media for t in track_infos}) == 1
-                else "Media"
-            ),
+            media=self._album_media({t.media for t in track_infos}),
             mediums=len(release["media"]),
             data_source=self.data_source,
             data_url=urljoin(BASE_URL, f"release/{release['id']}"),

@@ -1,42 +1,38 @@
-# This file is part of beets.
-# Copyright 2016, Jesse Weinstein
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for the play plugin"""
 
 import os
-import sys
-import unittest
 from unittest.mock import ANY, patch
 
 import pytest
 
-from beets.test.helper import CleanupModulesMixin, IOMixin, PluginTestCase
+from beets.test.helper import (
+    AutotagImportTestCase,
+    BeetsTestCase,
+    CleanupModulesMixin,
+    IOMixin,
+    PluginMixin,
+    TerminalImportMixin,
+)
 from beets.ui import UserError
 from beets.util import open_anything
 from beetsplug.play import PlayPlugin
 
 
-@patch("beetsplug.play.util.interactive_open")
-class PlayPluginTest(IOMixin, CleanupModulesMixin, PluginTestCase):
+class PlayPluginMixin(CleanupModulesMixin, PluginMixin):
     modules = (PlayPlugin.__module__,)
     plugin = "play"
 
     def setUp(self):
         super().setUp()
+        self.config["play"]["command"] = "echo"
+
+
+@patch("beetsplug.play.util.interactive_open")
+class PlayPluginTest(IOMixin, PlayPluginMixin, BeetsTestCase):
+    def setUp(self):
+        super().setUp()
         self.item = self.add_item(album="a nice älbum", title="aNiceTitle")
         self.lib.add_album([self.item])
-        self.config["play"]["command"] = "echo"
 
     def run_and_assert(
         self,
@@ -76,17 +72,35 @@ class PlayPluginTest(IOMixin, CleanupModulesMixin, PluginTestCase):
 
         self.run_and_assert(open_mock, ["title:aNiceTitle"], "echo other")
 
-    # FIXME: fails on windows
-    @unittest.skipIf(sys.platform == "win32", "win32")
     def test_relative_to(self, open_mock):
+        # Anchor to the item's own root: on Windows a path on another drive
+        # has no relative form at all.
+        relative_to = f"{self.item.filepath.anchor}something"
+        self.config["play"]["relative_to"] = relative_to
         self.config["play"]["command"] = "echo"
-        self.config["play"]["relative_to"] = "/something"
 
-        path = os.path.relpath(self.item.path, b"/something")
+        path = os.path.relpath(self.item.path, os.fsencode(relative_to))
         playlist = path.decode("utf-8")
         self.run_and_assert(
             open_mock, expected_cmd="echo", expected_playlist=playlist
         )
+
+    def test_relative_to_path_without_relative_form(self, open_mock):
+        """Paths that cannot be made relative are left absolute."""
+        relative_to = f"{self.item.filepath.anchor}something"
+        self.config["play"]["relative_to"] = relative_to
+
+        def no_relative_form(path, _):
+            raise ValueError(f"path is on mount {path!r}, start on mount ...")
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr("beetsplug.play.relpath", no_relative_form)
+            with self.assertLogs("beets.play", level="WARNING") as logs:
+                self.run_and_assert(
+                    open_mock, expected_playlist=self.item.path.decode("utf-8")
+                )
+
+        assert "stay absolute" in "\n".join(logs.output)
 
     def test_use_folders(self, open_mock):
         self.config["play"]["command"] = None
@@ -180,3 +194,35 @@ class PlayPluginTest(IOMixin, CleanupModulesMixin, PluginTestCase):
 
         with pytest.raises(UserError):
             self.run_command("play", "title:aNiceTitle")
+
+
+class PlayOnImportTest(
+    TerminalImportMixin, PlayPluginMixin, AutotagImportTestCase
+):
+    def setUp(self):
+        super().setUp()
+        self.prepare_album_for_import(1)
+        self.importer = self.setup_importer()
+
+    def test_play_on_import(self):
+        self.importer.add_choice("y")
+        self.importer.add_choice("1")
+
+        playlist_path = self.temp_path / "beetsplug_play" / "playlist.m3u"
+        playlist_path.parent.mkdir(parents=True)
+        playlist_path.touch()
+        playlist_path_bytes = os.fsencode(playlist_path)
+
+        with (
+            patch(
+                "beetsplug.play.get_temp_filename",
+                side_effect=lambda *_, **__: playlist_path,
+            ),
+            patch("beetsplug.play.subprocess.call") as subprocess_call_mock,
+        ):
+            self.importer.run()
+
+        # note that the call has mixed types (str and bytes)
+        subprocess_call_mock.assert_called_once_with(
+            ["echo", playlist_path_bytes]
+        )

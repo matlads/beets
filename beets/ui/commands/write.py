@@ -1,21 +1,44 @@
 """The `write` command: write tag information to files."""
 
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING, Protocol
 
 from beets import library, logging, ui
+from beets.exceptions import UserError
 from beets.util import syspath
 
-from .utils import do_query
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from beets.library import Library
+
 
 # Global logger.
 log = logging.getLogger("beets")
 
 
-def write_items(lib, query, pretend, force):
+class WriteCLIOpts(Protocol):
+    force: bool
+    limit: int | None
+    pretend: bool
+
+
+def write_items(
+    lib: Library,
+    query: Sequence[str],
+    pretend: bool,
+    force: bool,
+    limit: int | None,
+) -> None:
     """Write tag information from the database to the respective files
     in the filesystem.
     """
-    items, _ = do_query(lib, query, False, False)
+    items = lib.items(query, limit=limit)
+
+    if not items:
+        raise UserError("No matching items to write.")
 
     for item in items:
         # Item deleted?
@@ -40,8 +63,8 @@ def write_items(lib, query, pretend, force):
             item.try_sync(True, False)
 
 
-def write_func(lib, opts, args):
-    write_items(lib, args, opts.pretend, opts.force)
+def write_func(lib: Library, opts: WriteCLIOpts, args: list[str]) -> None:
+    write_items(lib, args, opts.pretend, opts.force, opts.limit)
 
 
 write_cmd = ui.Subcommand("write", help="write tag information to files")
@@ -49,12 +72,15 @@ write_cmd.parser.add_option(
     "-p",
     "--pretend",
     action="store_true",
+    default=False,
     help="show all changes but do nothing",
 )
 write_cmd.parser.add_option(
     "-f",
     "--force",
     action="store_true",
+    default=False,
     help="write tags even if the existing tags match the database",
 )
+write_cmd.parser.add_limit_option()
 write_cmd.func = write_func

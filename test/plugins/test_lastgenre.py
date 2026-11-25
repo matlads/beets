@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2016, Fabrice Laporte.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Tests for the 'lastgenre' plugin."""
 
 import re
@@ -23,9 +9,12 @@ import pytest
 
 from beets.library import Album
 from beets.test import _common
-from beets.test.helper import IOMixin, PluginTestCase
+from beets.test.helper import IOMixin, PluginTestCase, PluginTestHelper
+from beets.ui import UserError
 from beetsplug import lastgenre
-from beetsplug.lastgenre.utils import is_ignored
+from beetsplug.lastgenre.utils import is_ignored, normalize_genre
+
+_p = pytest.param
 
 
 class LastGenrePluginTest(IOMixin, PluginTestCase):
@@ -82,7 +71,7 @@ class LastGenrePluginTest(IOMixin, PluginTestCase):
         self._setup_config(whitelist={"blues", "rock", "jazz"}, count=2)
         assert self.plugin._resolve_genres(["pop", "blues"]) == ["blues"]
 
-        self._setup_config(canonical="", whitelist={"rock"})
+        self._setup_config(canonical=True, whitelist={"rock"})
         assert self.plugin._resolve_genres(["delta blues"]) == []
 
     def test_format_genres(self):
@@ -111,19 +100,23 @@ class LastGenrePluginTest(IOMixin, PluginTestCase):
         self._setup_config(canonical=True, whitelist={"rock"})
         assert self.plugin._resolve_genres(["delta blues"]) == []
 
-    def test_empty_string_enables_canonical(self):
-        """For backwards compatibility, setting the `canonical` option
-        to the empty string enables it using the default tree.
+    def test_empty_canonical_raises_user_error(self):
+        """An empty or null `canonical` setting is rejected instead of
+        silently falling back to the default tree.
         """
-        self._setup_config(canonical="", count=99)
-        assert self.plugin._resolve_genres(["delta blues"]) == ["blues"]
+        for value in ("", None):
+            self.config["lastgenre"]["canonical"] = value
+            with pytest.raises(UserError, match="Invalid canonical setting"):
+                self.plugin.setup()
 
-    def test_empty_string_enables_whitelist(self):
-        """Again for backwards compatibility, setting the `whitelist`
-        option to the empty string enables the default set of genres.
+    def test_empty_whitelist_raises_user_error(self):
+        """An empty or null `whitelist` setting is rejected instead of
+        silently falling back to the default whitelist.
         """
-        self._setup_config(whitelist="")
-        assert self.plugin._resolve_genres(["iota blues"]) == []
+        for value in ("", None):
+            self.config["lastgenre"]["whitelist"] = value
+            with pytest.raises(UserError, match="Invalid whitelist setting"):
+                self.plugin.setup()
 
     def test_prefer_specific_loads_tree(self):
         """When prefer_specific is enabled but canonical is not the
@@ -167,10 +160,95 @@ class LastGenrePluginTest(IOMixin, PluginTestCase):
         assert album.genres == ["Original Genre"]
         assert album.items()[0].genres == ["Original Genre"]
 
+    def _add_album_for_import(self) -> Album:
+        item = self.create_item(
+            album="Import Album",
+            albumartist="Import Artist",
+            artist="Import Artist",
+            title="Import Track",
+        )
+        return self.lib.add_album([item])
+
+    def _run_import_stage(self, album):
+        """Run the import stage as the importer does, return what it printed."""
+        task = Mock(is_album=True, album=album)
+        self.io.getoutput()
+
+        with patch.object(
+            self.plugin, "_get_genre", return_value=(["Rock"], "test")
+        ):
+            for stage in self.plugin.get_import_stages():
+                stage(Mock(), task)
+
+        return self.io.getoutput()
+
+    def test_import_stage_does_not_print_genre_changes(self):
+        """The import stage must not print by default.
+
+        See #6830: the printed genre changes appeared on top of the importer's
+        prompt for the next album, which made the import look frozen.
+        """
+        self.config["verbose"] = 0
+        album = self._add_album_for_import()
+
+        assert self._run_import_stage(album) == ""
+
+        album.load()
+        assert album.genres == ["Rock"]
+
+    def test_import_stage_prints_genre_changes_when_verbose(self):
+        self.config["verbose"] = 1
+        album = self._add_album_for_import()
+
+        assert "genres:" in self._run_import_stage(album)
+
     def test_no_duplicate(self):
         """Remove duplicated genres."""
         self._setup_config(count=99)
         assert self.plugin._resolve_genres(["blues", "blues"]) == ["blues"]
+
+    def test_fetch_va_genres_picks_most_popular_track_genre(self):
+        """Among fetched track genres, the most common one wins."""
+        self._setup_config()
+        self.config["lastgenre"]["source"] = "track"
+        self.plugin.setup()
+        item1 = self.add_item(artist="Artist A")
+        item2 = self.add_item(artist="Artist B")
+        item3 = self.add_item(artist="Artist C")
+        album = self.lib.add_album([item1, item2, item3])
+
+        track_genres = {
+            "Artist A": ["Rock"],
+            "Artist B": ["Rock"],
+            "Artist C": ["Jazz"],
+        }
+        self.plugin.client.fetch = lambda kind, obj, *args: (
+            track_genres[obj.artist] if kind == "track" else []
+        )
+
+        assert self.plugin._fetch_va_genres(album) == ["Rock"]
+
+    def test_fetch_va_genres_falls_back_to_artist_genre(self):
+        """When a track has no genre, fall back to its artist's genre."""
+        self._setup_config()
+        item = self.add_item(artist="Artist A")
+        album = self.lib.add_album([item])
+
+        self.plugin.client.fetch = lambda kind, obj, *args: (
+            ["Jazz"] if kind == "artist" else []
+        )
+
+        assert self.plugin._fetch_va_genres(album) == ["Jazz"]
+
+    def test_fetch_va_genres_empty_when_nothing_found(self):
+        """Return an empty list when neither track nor artist genres exist."""
+        self._setup_config()
+        item = self.add_item(artist="Artist A")
+        album = self.lib.add_album([item])
+
+        self.plugin.client.fetch = lambda kind, obj, *args: []
+
+        assert self.plugin._fetch_va_genres(album) == []
 
     def test_fetch_genre(self):
         class MockPylastElem:
@@ -194,7 +272,7 @@ class LastGenrePluginTest(IOMixin, PluginTestCase):
         res = plugin.client.fetch_genres(MockPylastObj())
         assert res == ["pop", "rap"]
 
-        plugin.client._min_weight = 50
+        plugin.client.min_weight = 50
         res = plugin.client.fetch_genres(MockPylastObj())
         assert res == ["pop"]
 
@@ -204,8 +282,8 @@ class LastGenrePluginTest(IOMixin, PluginTestCase):
         tags = ("electronic", "ambient", "post-rock", "downtempo")
         res = lastgenre.sort_by_depth(tags, self.plugin.c14n_branches)
         assert res == ["post-rock", "downtempo", "ambient", "electronic"]
-        # Non-canonical tag ('chillout') present.
-        tags = ("electronic", "ambient", "chillout")
+        # Non-canonical tag ('chill out') present.
+        tags = ("electronic", "ambient", "chill out")
         res = lastgenre.sort_by_depth(tags, self.plugin.c14n_branches)
         assert res == ["ambient", "electronic"]
 
@@ -278,22 +356,100 @@ class LastGenrePluginTest(IOMixin, PluginTestCase):
             "ignored oldest ancestor must not appear in the result"
         )
 
+    # _filter_valid tests
+
+    def test_filter_valid_no_whitelist_no_ignorelist_returns_all(self):
+        """With neither whitelist nor ignorelist, all non-empty genres pass."""
+        self._setup_config(whitelist=False)
+        self.plugin.ignore_patterns = defaultdict(list)
+        result = self.plugin._filter_valid(["rock", "jazz", "blues"])
+        assert result == ["rock", "jazz", "blues"]
+
+    def test_filter_valid_strips_empty_and_whitespace(self):
+        """Empty strings and whitespace-only strings are always removed."""
+        self._setup_config(whitelist=False)
+        self.plugin.ignore_patterns = defaultdict(list)
+        result = self.plugin._filter_valid(["rock", "", "  ", "blues"])
+        assert result == ["rock", "blues"]
+
+    def test_filter_valid_whitelist_drops_unknown_genres(self):
+        """Genres not in the whitelist are removed."""
+        self._setup_config(whitelist={"rock", "blues"})
+        result = self.plugin._filter_valid(["rock", "jazz", "blues"])
+        assert result == ["rock", "blues"]
+
+    def test_filter_valid_whitelist_is_case_insensitive(self):
+        """Whitelist lookup is lowercased, so genre case doesn't matter."""
+        self._setup_config(whitelist={"rock"})
+        result = self.plugin._filter_valid(["Rock", "ROCK", "rock"])
+        assert result == ["Rock", "ROCK", "rock"]
+
+    def test_filter_valid_ignorelist_drops_matched_genres(self):
+        """Genres matching ignorelist patterns are removed."""
+        self._setup_config(whitelist=False)
+        self.plugin.ignore_patterns = defaultdict(
+            list, {"*": [re.compile(r"^metal$", re.IGNORECASE)]}
+        )
+        result = self.plugin._filter_valid(["rock", "metal", "jazz"])
+        assert result == ["rock", "jazz"]
+
+    def test_filter_valid_ignorelist_artist_specific(self):
+        """Artist-specific ignorelist patterns apply only for that artist."""
+        self._setup_config(whitelist=False)
+        self.plugin.ignore_patterns = defaultdict(
+            list, {"the artist": [re.compile(r"^noise$", re.IGNORECASE)]}
+        )
+        assert self.plugin._filter_valid(
+            ["noise", "rock"], artist="the artist"
+        ) == ["rock"]
+        assert self.plugin._filter_valid(["noise", "rock"], artist="other") == [
+            "noise",
+            "rock",
+        ]
+
+    def test_filter_valid_whitelist_and_ignorelist_combined(self):
+        """Whitelist is applied first; ignorelist further filters the remainder."""
+        self._setup_config(whitelist={"rock", "metal", "jazz"})
+        self.plugin.ignore_patterns = defaultdict(
+            list, {"*": [re.compile(r"^metal$", re.IGNORECASE)]}
+        )
+        result = self.plugin._filter_valid(["rock", "metal", "pop", "jazz"])
+        assert result == ["rock", "jazz"]
+
 
 @pytest.fixture
-def config(config):
-    """Provide a fresh beets configuration for every test/parameterize call
+def mock_lastfm(monkeypatch):
+    """Return a function that makes the last.fm client serve `mock_genres`.
 
-    This is necessary to prevent the following parameterized test to bleed
-    config test state in between test cases.
+    `mock_genres` maps the arguments of a client lookup to the genres it
+    returns: the lookup kind, followed by the extra arguments of per-artist
+    lookups (used for multi-valued albumartists), e.g.
+
+        {
+            ("album",): ["Jazz"],
+            ("album", "Artist A", "the album"): ["Rock"],
+            ("album_artist", "Artist A"): ["Rock"],
+        }
+
+    Spell out empty results (`("album",): []`) to show a lookup found nothing.
+    A lookup without a matching entry returns no genres as well.
     """
-    return config
+
+    def install(mock_genres):
+        def fake_fetch(_, kind, __, *args):
+            return mock_genres.get((kind, *args), [])
+
+        monkeypatch.setattr(
+            "beetsplug.lastgenre.client.LastFmClient.fetch", fake_fetch
+        )
+
+    return install
 
 
 @pytest.mark.parametrize(
     "config_values, item_genre, mock_genres, expected_result",
     [
-        # force and keep whitelisted
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -304,11 +460,11 @@ def config(config):
                 "count": 10,
             },
             ["Blues"],
-            {"album": ["Jazz"]},
+            {("album",): ["Jazz"]},
             (["Blues", "Jazz"], "keep + album, whitelist"),
+            id="force-keep-whitelisted",
         ),
-        # force and keep whitelisted, unknown original
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -319,11 +475,11 @@ def config(config):
                 "count": 10,
             },
             ["original unknown", "Blues"],
-            {"album": ["Jazz"]},
+            {("album",): ["Jazz"]},
             (["Blues", "Jazz"], "keep + album, whitelist"),
+            id="force-keep-whitelisted-unknown-original",
         ),
-        # force and keep whitelisted on empty tag
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -333,11 +489,11 @@ def config(config):
                 "prefer_specific": False,
             },
             [],
-            {"album": ["Jazz"]},
+            {("album",): ["Jazz"]},
             (["Jazz"], "album, whitelist"),
+            id="force-keep-whitelisted-empty-tag",
         ),
-        # force and keep, artist configured
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -348,11 +504,11 @@ def config(config):
                 "count": 10,
             },
             ["original unknown", "Blues"],
-            {"album": ["Jazz"], "artist": ["Pop"]},
+            {("album",): ["Jazz"], ("artist",): ["Pop"]},
             (["Blues", "Pop"], "keep + artist, whitelist"),
+            id="force-keep-artist-configured",
         ),
-        # don't force, disabled whitelist
-        (
+        _p(
             {
                 "force": False,
                 "keep_existing": False,
@@ -362,11 +518,11 @@ def config(config):
                 "prefer_specific": False,
             },
             ["any genre"],
-            {"album": ["Jazz"]},
+            {("album",): ["Jazz"]},
             (["any genre"], "keep any, no-force"),
+            id="no-force-whitelist-disabled",
         ),
-        # don't force and empty is regular last.fm fetch; no whitelist too
-        (
+        _p(
             {
                 "force": False,
                 "keep_existing": False,
@@ -376,14 +532,15 @@ def config(config):
                 "prefer_specific": False,
             },
             [],
-            {"album": ["Jazzin"]},
+            {("album",): ["Jazzin"]},
             (["Jazzin"], "album, any"),
+            id="no-force-empty-tag-no-whitelist",
         ),
         # Canonicalize original genre when force is **off** and
         # whitelist, canonical and cleanup_existing are on.
         # "Cosmic Disco" is not in the default whitelist, thus gets resolved "up" in the
         # tree to "Disco" and "Electronic".
-        (
+        _p(
             {
                 "force": False,
                 "keep_existing": False,
@@ -395,11 +552,11 @@ def config(config):
                 "count": 10,
             },
             ["Cosmic Disco"],
-            {"artist": []},
+            {("artist",): []},
             (["Disco", "Electronic"], "keep + cleanup, whitelist"),
+            id="canonicalize-existing-genre-with-cleanup",
         ),
-        # fallback to next stages until found
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -410,12 +567,11 @@ def config(config):
                 "count": 10,
             },
             ["unknown genre"],
-            {"track": None, "album": None, "artist": ["Jazz"]},
+            {("track",): [], ("album",): [], ("artist",): ["Jazz"]},
             (["Unknown Genre", "Jazz"], "keep + artist, any"),
+            id="fallback-through-stages-until-found",
         ),
-        # Keep the original genre when force and keep_existing are on, and
-        # whitelist is disabled
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -426,12 +582,11 @@ def config(config):
                 "prefer_specific": False,
             },
             ["any existing"],
-            {"track": None, "album": None, "artist": None},
+            {("track",): [], ("album",): [], ("artist",): []},
             (["any existing"], "original fallback"),
+            id="keep-original-with-keep-existing-without-whitelist",
         ),
-        # Keep the original genre when force and keep_existing are on, and
-        # whitelist is enabled, and genre is valid.
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -442,12 +597,11 @@ def config(config):
                 "prefer_specific": False,
             },
             ["Jazz"],
-            {"track": None, "album": None, "artist": None},
+            {("track",): [], ("album",): [], ("artist",): []},
             (["Jazz"], "original fallback"),
+            id="keep-valid-original-with-keep-existing-with-whitelist",
         ),
-        # Return the configured fallback when force is on but
-        # keep_existing is not.
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": False,
@@ -458,11 +612,11 @@ def config(config):
                 "prefer_specific": False,
             },
             ["Jazz"],
-            {"track": None, "album": None, "artist": None},
+            {("track",): [], ("album",): [], ("artist",): []},
             (["fallback genre"], "fallback"),
+            id="fallback-without-keep-existing",
         ),
-        # fallback to fallback if no original
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -473,11 +627,11 @@ def config(config):
                 "prefer_specific": False,
             },
             [],
-            {"track": None, "album": None, "artist": None},
+            {("track",): [], ("album",): [], ("artist",): []},
             (["fallback genre"], "fallback"),
+            id="fallback-when-no-original-genre",
         ),
-        # limit a lot of results
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -488,15 +642,16 @@ def config(config):
                 "prefer_specific": False,
             },
             ["original unknown", "Blues", "Rock", "Folk", "Metal"],
-            {"album": ["Jazz", "Bebop", "Hardbop"]},
+            {("album",): ["Jazz", "Bebop", "Hardbop"]},
             (
                 ["Blues", "Rock", "Metal", "Jazz", "Bebop"],
                 "keep + album, whitelist",
             ),
+            id="limit-many-results",
         ),
         # fallback to next stage (artist) if no allowed original present
         # and no album genre were fetched.
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -507,14 +662,15 @@ def config(config):
                 "prefer_specific": False,
             },
             ["not whitelisted original"],
-            {"track": None, "album": None, "artist": ["Jazz"]},
+            {("album",): [], ("artist",): ["Jazz"]},
             (["Jazz"], "keep + artist, whitelist"),
+            id="fallback-to-artist-when-original-and-album-invalid",
         ),
         # canonicalization transforms non-whitelisted genres to canonical forms
         #
         # "Acid Techno" is not in the default whitelist, thus gets resolved "up" in the
         # tree to "Techno" and "Electronic".
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": False,
@@ -525,8 +681,9 @@ def config(config):
                 "count": 10,
             },
             [],
-            {"album": ["acid techno"]},
+            {("album",): ["acid techno"]},
             (["Techno", "Electronic"], "album, whitelist"),
+            id="canonicalize-non-whitelisted-fetched-genre",
         ),
         # canonicalization transforms whitelisted genres to canonical forms and
         # includes originals
@@ -534,7 +691,7 @@ def config(config):
         # "Detroit Techno" is in the default whitelist, thus it stays and and also gets
         # resolved "up" in the tree to "Techno" and "Electronic". The same happens for
         # newly fetched genre "Acid House".
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -546,7 +703,7 @@ def config(config):
                 "extended_debug": True,
             },
             ["detroit techno"],
-            {"album": ["acid house"]},
+            {("album",): ["acid house"]},
             (
                 [
                     "Detroit Techno",
@@ -557,6 +714,7 @@ def config(config):
                 ],
                 "keep + album, whitelist",
             ),
+            id="canonicalize-whitelisted-original-and-fetched-genres",
         ),
         # canonicalization transforms non-whitelisted original genres to canonical
         # forms and deduplication works.
@@ -564,7 +722,7 @@ def config(config):
         # "Cosmic Disco" is not in the default whitelist, thus gets resolved "up" in the
         # tree to "Disco" and "Electronic". New genre "Detroit Techno" resolves to
         # "Techno". Both resolve to "Electronic" which gets deduplicated.
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -575,18 +733,19 @@ def config(config):
                 "count": 10,
             },
             ["Cosmic Disco"],
-            {"album": ["Detroit Techno"]},
+            {("album",): ["Detroit Techno"]},
             (
                 ["Disco", "Electronic", "Detroit Techno", "Techno"],
                 "keep + album, whitelist",
             ),
+            id="canonicalize-and-deduplicate-original-and-fetched-genres",
         ),
         # canonicalization transforms non-whitelisted original genres to canonical
         # forms and deduplication works, **even** when no new genres are found online.
         #
         # "Cosmic Disco" is not in the default whitelist, thus gets resolved "up" in the
         # tree to "Disco" and "Electronic".
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -597,15 +756,16 @@ def config(config):
                 "count": 10,
             },
             ["Cosmic Disco"],
-            {"album": [], "artist": []},
+            {("album",): [], ("artist",): []},
             (["Disco", "Electronic"], "keep + original fallback, whitelist"),
+            id="canonicalize-and-deduplicate-without-new-genres",
         ),
         # Semicolon-delimited genre tag from an external mediafile
         # ("Jazz; Funk; Soul" as a single element) is split by
         # DelimitedString.normalize() on assignment and returned as three
         # individual genres via the "original fallback" path when all Last.fm
         # stages return empty.
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -616,15 +776,16 @@ def config(config):
                 "count": 10,
             },
             ["Jazz; Funk; Soul"],
-            {"album": [], "artist": []},
+            {("album",): [], ("artist",): []},
             (["Jazz", "Funk", "Soul"], "original fallback"),
+            id="split-semicolon-delimited-original-genres",
         ),
         # Multiple whitelisted genres in the multi-valued `genres` field must
         # NOT be wiped when Last.fm returns no tags — whether the album is not
         # found at all or exists but has no tags. Both scenarios produce an
         # empty list from the fetcher and must be preserved via "original
         # fallback".
-        (
+        _p(
             {
                 "force": True,
                 "keep_existing": True,
@@ -634,38 +795,143 @@ def config(config):
                 "prefer_specific": False,
             },
             ["Baroque", "Classical"],
-            {"album": [], "artist": []},
+            {("album",): [], ("artist",): []},
             (["Baroque", "Classical"], "original fallback"),
+            id="preserve-multiple-whitelisted-genres-on-empty-fetch",
+        ),
+        # 'hip-hop' and 'hiphop' both normalize to 'hip hop' via aliases, so
+        # the original fallback path must deduplicate them.
+        _p(
+            {
+                "force": True,
+                "keep_existing": True,
+                "source": "album",
+                "whitelist": True,
+                "canonical": False,
+                "prefer_specific": False,
+                "aliases": {"hip hop": ["hip-hop", "hiphop"]},
+            },
+            ["hip-hop", "hiphop"],
+            {("album",): [], ("artist",): []},
+            (["hip hop"], "original fallback"),
+            id="deduplicate-alias-normalized-original-genres",
+        ),
+        # The album lookup and both per-artist album lookups (the entries for
+        # "Artist A" and "Artist B" are missing) find nothing, so the artist
+        # stage provides the genres.
+        _p(
+            {
+                "force": True,
+                "keep_existing": True,
+                "source": "album",
+                "whitelist": False,
+                "canonical": False,
+                "prefer_specific": False,
+                "count": 10,
+            },
+            [],
+            {("album",): [], ("artist",): ["Jazz"]},
+            (["Jazz"], "artist, any"),
+            id="empty-multi-valued-album-lookups-fall-through-to-artist",
+        ),
+        # The per-artist album lookups are only answered for the exact
+        # (artist, album) arguments listed here, so passing wrong arguments
+        # finds no genres and the test fails.
+        _p(
+            {
+                "force": True,
+                "keep_existing": True,
+                "source": "album",
+                "whitelist": False,
+                "canonical": False,
+                "prefer_specific": False,
+                "count": 10,
+            },
+            [],
+            {
+                ("album",): [],
+                ("artist",): ["Pop"],
+                ("album", "Artist A", "the album"): ["Rock"],
+                ("album", "Artist B", "the album"): ["Jazz"],
+            },
+            (["Rock", "Jazz"], "multi-valued albumartist album, any"),
+            id="multi-valued-albumartist-album-lookups",
         ),
     ],
 )
-@pytest.mark.usefixtures("config")
 def test_get_genre(
-    monkeypatch, config_values, item_genre, mock_genres, expected_result
+    mock_lastfm, config, config_values, item_genre, mock_genres, expected_result
 ):
     """Test _get_genre with various configurations."""
-    # Mock the last.fm fetchers. When whitelist enabled, we can assume only
-    # whitelisted genres get returned, the plugin's _resolve_genre method
-    # ensures it.
-    monkeypatch.setattr(
-        "beetsplug.lastgenre.client.LastFmClient.fetch",
-        lambda _, kind, __: mock_genres[kind],
-    )
-    # Initialize plugin instance and item
+    mock_lastfm(mock_genres)
+    config["lastgenre"].set(config_values)
     plugin = lastgenre.LastGenrePlugin()
-    # Configure
-    plugin.config.set(config_values)
-    plugin.setup()  # Loads default whitelist and canonicalization tree
+    # Loads the default whitelist and canonicalization tree. With the
+    # whitelist enabled the plugin filters the results itself, so the mocked
+    # genres don't need to be pre-filtered.
+    plugin.setup()
 
     item = _common.item()
     item.genres = item_genre
+    # Needed for the per-artist lookups of multi-valued albumartists
+    item.albumartists = ["Artist A", "Artist B"]
 
     # Run
     assert plugin._get_genre(item) == expected_result
 
 
-class TestIgnorelist:
+@pytest.mark.parametrize(
+    "mock_genres, expected_result",
+    [
+        _p(
+            {("album",): [], ("album_artist",): ["Jazz"]},
+            (["Jazz"], "albumartist, any"),
+            id="albumartist-genres",
+        ),
+        _p(
+            {
+                ("album",): [],
+                ("album_artist",): [],
+                ("album_artist", "Artist A"): ["Rock"],
+                ("album_artist", "Artist B"): ["Jazz"],
+            },
+            (["Rock", "Jazz"], "multi-valued albumartist, any"),
+            id="multi-valued-albumartist-genres",
+        ),
+        _p(
+            {("album",): [], ("album_artist",): []},
+            ([], "fallback unconfigured"),
+            id="no-albumartist-genres",
+        ),
+    ],
+)
+def test_get_genre_album(mock_lastfm, config, mock_genres, expected_result):
+    """Test the artist stage that only exists for albums.
+
+    Items fetch a single "artist" genre. Albums fetch "album_artist" genres
+    and fall back to one lookup per entry of the multi-valued `albumartists`.
+    `test_get_genre` only passes Items, so it cannot reach this stage.
+    """
+    mock_lastfm(mock_genres)
+    config["lastgenre"].set(
+        {"source": "artist", "whitelist": False, "count": 10, "force": True}
+    )
+    plugin = lastgenre.LastGenrePlugin()
+    plugin.setup()
+
+    album = Album()
+    album.albumartist = "Artist Group"
+    album.albumartists = ["Artist A", "Artist B"]
+    album.album = "the album"
+    album.genres = []
+
+    assert plugin._get_genre(album) == expected_result
+
+
+class TestIgnorelist(PluginTestHelper):
     """Ignorelist pattern matching tests independent of resolve_genres."""
+
+    plugin = "lastgenre"
 
     @pytest.mark.parametrize(
         "ignorelist_dict, artist, genre, expected_forbidden",
@@ -737,16 +1003,12 @@ class TestIgnorelist:
     ):
         """Test ignorelist pattern matching logic directly."""
 
-        logger = Mock()
+        with self.configure_plugin({"ignorelist": ignorelist_dict}):
+            plugin = lastgenre.LastGenrePlugin()
+            result = is_ignored(
+                plugin._log, plugin.ignore_patterns, genre, artist
+            )
 
-        # Set up compiled ignorelist directly (skipping file parsing)
-        compiled_ignorelist = defaultdict(list)
-        for artist_name, patterns in ignorelist_dict.items():
-            compiled_ignorelist[artist_name.lower()] = [
-                re.compile(pattern, re.IGNORECASE) for pattern in patterns
-            ]
-
-        result = is_ignored(logger, compiled_ignorelist, genre, artist)
         assert result == expected_forbidden
 
     @pytest.mark.parametrize(
@@ -766,8 +1028,6 @@ class TestIgnorelist:
                 {"*": ["spoken word"], "metallica": ["metal"]},
                 {"*": ["spoken word"], "metallica": ["metal"]},
             ),
-            # Artist names are preserved by the current loader implementation.
-            ({"METALLICA": ["METAL"]}, {"METALLICA": ["METAL"]}),
             # Invalid regex pattern that gets escaped (full-match literal fallback)
             (
                 {"artist": ["[invalid(regex"]},
@@ -782,33 +1042,15 @@ class TestIgnorelist:
         self, ignorelist_config, expected_ignorelist
     ):
         """Test ignorelist parsing/compilation with isolated config state."""
-        cfg = confuse.Configuration("test", read=False)
-        cfg.set({"lastgenre": {"ignorelist": ignorelist_config}})
 
-        # Mimic the plugin loader behavior in isolation to avoid global config bleed.
-        if not cfg["lastgenre"]["ignorelist"].get():
-            string_ignorelist = {}
-        else:
-            raw_strs = cfg["lastgenre"]["ignorelist"].get(
-                confuse.MappingValues(confuse.Sequence(str))
-            )
-            string_ignorelist = {}
-            for artist, patterns in raw_strs.items():
-                compiled_patterns = []
-                for pattern in patterns:
-                    try:
-                        compiled_patterns.append(
-                            re.compile(pattern, re.IGNORECASE).pattern
-                        )
-                    except re.error:
-                        compiled_patterns.append(
-                            re.compile(
-                                re.escape(pattern), re.IGNORECASE
-                            ).pattern
-                        )
-                string_ignorelist[artist] = compiled_patterns
+        with self.configure_plugin({"ignorelist": ignorelist_config}):
+            plugin = lastgenre.LastGenrePlugin()
+            ignore_patterns = {
+                artist: [pattern.pattern for pattern in patterns]
+                for artist, patterns in plugin.ignore_patterns.items()
+            }
 
-        assert string_ignorelist == expected_ignorelist
+        assert ignore_patterns == expected_ignorelist
 
     @pytest.mark.parametrize(
         "invalid_config, expected_error_message",
@@ -827,17 +1069,15 @@ class TestIgnorelist:
         self, invalid_config, expected_error_message
     ):
         """Test ignorelist config validation errors in isolated config."""
-        cfg = confuse.Configuration("test", read=False)
-        cfg.set({"lastgenre": {"ignorelist": invalid_config}})
-
-        with pytest.raises(confuse.ConfigTypeError) as exc_info:
-            _ = cfg["lastgenre"]["ignorelist"].get(
-                confuse.MappingValues(confuse.Sequence(str))
-            )
+        with (
+            pytest.raises(confuse.ConfigTypeError) as exc_info,
+            self.configure_plugin({"ignorelist": invalid_config}),
+        ):
+            lastgenre.LastGenrePlugin()
 
         assert expected_error_message in str(exc_info.value)
 
-    def test_ignorelist_multivalued_album_artist_fallback(
+    def test_ignorelist_multivalued_albumartist_fallback(
         self, monkeypatch, config
     ):
         """`stage_artist=None` fallback must not re-drop per-artist results."""
@@ -870,5 +1110,259 @@ class TestIgnorelist:
 
         genres, label = plugin._get_genre(obj)
 
-        assert "multi-valued album artist" in label
+        assert "multi-valued albumartist" in label
         assert "Metal" in genres
+
+
+class TestAliases(PluginTestHelper):
+    """Alias pattern matching and loading tests."""
+
+    plugin = "lastgenre"
+
+    @pytest.mark.parametrize(
+        "aliases_dict, genre, expected",
+        [
+            # Static replacement
+            ({"foo bar": ["foobar"]}, "foobar", "foo bar"),
+            # Template with back-reference
+            ({r"\1 music": [r"(fake)[ /-]*music"]}, "fake-music", "fake music"),
+            # Template with multiple back-references
+            ({r"\1-\2": [r"(x)[ /-]*(y)"]}, "x y", "x-y"),
+            # Case-insensitive matching
+            ({"foo bar": ["foobar"]}, "FOOBAR", "foo bar"),
+            # No match — genre returned as-is (lowercased)
+            ({"foo bar": ["foobar"]}, "jazz", "jazz"),
+            # Empty alias list → no-op
+            ({}, "something", "something"),
+        ],
+    )
+    def test_normalize_genre(
+        self, aliases_dict: dict[str, list[str]], genre: str, expected: str
+    ) -> None:
+        """Test normalize_genre() with static and template canonical names."""
+        alias_patterns = [
+            (re.compile(pat, re.IGNORECASE), template.lower())
+            for template, patterns in aliases_dict.items()
+            for pat in patterns
+        ]
+        assert normalize_genre(Mock(), alias_patterns, genre) == expected
+
+    def test_normalize_genre_invalid_template_does_not_crash(self) -> None:
+        """Invalid replacement templates are skipped instead of crashing."""
+        logger = Mock()
+        alias_patterns = [
+            (re.compile(r"(hip)[ /-]*hop", re.IGNORECASE), r"\g<2> hop")
+        ]
+
+        assert normalize_genre(logger, alias_patterns, "hip-hop") == "hip-hop"
+        logger.warning.assert_called_once()
+
+    def test_aliases_config_format(self):
+        """Test _load_aliases() loading from inline config dict."""
+        # Multi-pattern list: proves all patterns are loaded, not just the first
+        with self.configure_plugin(
+            {"aliases": {"hip hop": ["hip-hop", "hiphop"]}}
+        ):
+            plugin = lastgenre.LastGenrePlugin()
+            assert (
+                normalize_genre(plugin._log, plugin.alias_patterns, "hip-hop")
+                == "hip hop"
+            )
+            assert (
+                normalize_genre(plugin._log, plugin.alias_patterns, "hiphop")
+                == "hip hop"
+            )
+
+    @pytest.mark.parametrize(
+        "invalid_config, expected_error",
+        [
+            # Plain string instead of mapping
+            ("/path/to/aliases.txt", "must be a dict"),
+            # Integer
+            (42, "must be a dict"),
+            # Mapping with non-list value
+            ({"hip hop": "hip-hop"}, "must be a list"),
+        ],
+    )
+    def test_aliases_config_format_errors(self, invalid_config, expected_error):
+        """Test that invalid aliases config values raise confuse.ConfigTypeError."""
+        with (
+            pytest.raises(confuse.ConfigTypeError) as exc_info,
+            self.configure_plugin({"aliases": invalid_config}),
+        ):
+            lastgenre.LastGenrePlugin()
+        assert expected_error in str(exc_info.value)
+
+    def test_normalize_before_whitelist(self):
+        """Aliases normalize BEFORE whitelist filtering.
+
+        'hip-hop' is not on the whitelist but 'hip hop' is.  With aliases
+        enabled the tag must survive whitelist filtering.
+        """
+        with self.configure_plugin(
+            {"aliases": {"hip hop": ["hip-hop", "hiphop"]}}
+        ):
+            plugin = lastgenre.LastGenrePlugin()
+            # Inject only 'hip hop' into the whitelist to prove the alias fired.
+            plugin.whitelist = {"hip hop"}
+
+            result = plugin._resolve_genres(["hip-hop"])
+        assert result == ["hip hop"], (
+            "alias must normalize 'hip-hop' → 'hip hop' before whitelist check"
+        )
+
+    def test_original_fallback_keeps_all_alias_normalized_genres(self, config):
+        """Original-fallback path alias-normalizes without truncating to count.
+
+        Covers force + keep_existing + whitelist + aliases with an empty
+        Last.fm response, so ``_get_genre`` falls back to the item's own
+        (alias-normalized) genres.
+
+        With ``count`` set to 1, both 'hip-hop' (whitelisted only after
+        normalizing to 'hip hop') and the already-whitelisted 'Jazz' must
+        survive, proving the count limit isn't applied early.
+        """
+        with self.configure_plugin(
+            {
+                "force": True,
+                "keep_existing": True,
+                "source": "album",
+                "whitelist": True,
+                "count": 1,
+                "aliases": {"hip hop": ["hip-hop", "hiphop"]},
+            }
+        ):
+            plugin = lastgenre.LastGenrePlugin()
+            plugin.whitelist = {"hip hop", "jazz"}
+
+            item = _common.item()
+            item.genres = ["hip-hop", "Jazz"]
+
+            with patch(
+                "beetsplug.lastgenre.client.LastFmClient.fetch", return_value=[]
+            ):
+                assert plugin._get_genre(item) == (
+                    ["hip hop", "Jazz"],
+                    "original fallback",
+                )
+
+    def test_normalize_before_ignorelist(self):
+        """Aliases normalize BEFORE ignorelist filtering.
+
+        If 'hip hop' is ignored but 'hip-hop' is fed in, the alias fires first
+        so the result is empty (correctly ignored).
+        """
+        with self.configure_plugin({"aliases": {"hip hop": ["hip-hop"]}}):
+            plugin = lastgenre.LastGenrePlugin()
+            plugin.ignore_patterns = {
+                "*": [re.compile("hip hop", re.IGNORECASE)]
+            }
+
+            result = plugin._resolve_genres(["hip-hop"])
+        assert result == [], (
+            "alias must normalize 'hip-hop' before ignorelist check drops it"
+        )
+
+    def test_disabled(self):
+        """With aliases: false, no normalization is performed."""
+        with self.configure_plugin({"aliases": False}):
+            plugin = lastgenre.LastGenrePlugin()
+            assert plugin.alias_patterns == []
+            # normalize_genre with an empty list must return the genre unchanged.
+            assert (
+                normalize_genre(plugin._log, plugin.alias_patterns, "hip-hop")
+                == "hip-hop"
+            )
+
+    @pytest.mark.parametrize(
+        "input_genre, expected_genre",
+        [
+            ("dnb", "drum and bass"),
+            ("drum n bass", "drum and bass"),
+            ("r&b", "r&b"),
+            ("rnb", "r&b"),
+            ("rock & roll", "rock and roll"),
+            ("rock'n'roll", "rock and roll"),
+            ("kpop", "k-pop"),
+            ("k -pop", "k-pop"),
+            ("j rock", "j-rock"),
+            ("post rock", "post-rock"),
+            ("lofi", "lo-fi"),
+            ("lo fi", "lo-fi"),
+            ("p funk", "p-funk"),
+            ("synth funk", "synth funk"),
+            ("synth pop", "synth-pop"),
+            ("synth-wave", "synthwave"),
+            ("avantgarde", "avant-garde"),
+            ("avant gard", "avant-garde"),
+            ("nu-jazz", "nu jazz"),
+            ("nu-metal", "nu metal"),
+            ("nu-soul", "nu soul"),
+            ("nu-disco", "nu disco"),
+            ("nu - disco", "nu disco"),
+            ("electronic music", "electronic"),
+            ("world", "world music"),
+            ("chill", "chill"),
+            ("chill out", "chillout"),
+            ("chill-out", "chillout"),
+            ("dark wave", "dark wave"),
+            ("dark-wave", "dark wave"),
+            ("blues rock", "blues rock"),
+            ("blues-rock", "blues rock"),
+            ("folk-rock", "folk rock"),
+            ("downbeat", "downtempo"),
+            ("shoegazer", "shoegaze"),
+            ("shoegazing", "shoegaze"),
+            ("hip-hop", "hip hop"),
+            ("triphop", "trip hop"),
+            ("punk", "punk rock"),
+            ("alt", "alt"),
+            ("alt rock", "alternative rock"),
+            ("alternative", "alternative"),
+            ("goth", "gothic rock"),
+            ("goth rock", "gothic rock"),
+            ("gothic rock", "gothic rock"),
+            ("prog", "progressive rock"),
+            ("prog rock", "progressive rock"),
+            ("progressive rock", "progressive rock"),
+            ("trad", "trad"),
+            ("traditional", "traditional"),
+            ("indie", "indie"),
+            ("indie rock", "indie rock"),
+            ("juke/footwork", "juke/footwork"),
+            ("Funk / Soul", "funk / soul"),
+            ("psy-trance", "psytrance"),
+            ("psy rock", "psychedelic rock"),
+            ("psych-pop", "psychedelic pop"),
+            ("disney", "disney"),
+            ("old-school death-metal", "old school death metal"),
+            ("old-skool-hip-hop", "old school hip hop"),
+            ("old school-jungle", "old school jungle"),
+        ],
+    )
+    def test_default_alias_patterns(self, input_genre, expected_genre):
+        """Verify that bundled aliases.yaml correctly handles common variants."""
+        with self.configure_plugin({}):
+            plugin = lastgenre.LastGenrePlugin()
+            result = normalize_genre(
+                plugin._log, plugin.alias_patterns, input_genre
+            )
+        assert result == expected_genre
+
+    def test_client_normalizes_in_last_lookup(self):
+        """LastFmClient._last_lookup applies alias normalization then ignorelist."""
+        alias_patterns = [(re.compile(r"hip-hop", re.IGNORECASE), "hip hop")]
+        ignore_patterns = {"*": [re.compile("hip hop", re.IGNORECASE)]}
+        client = lastgenre.client.LastFmClient(
+            Mock(), 0, ignore_patterns, alias_patterns
+        )
+
+        mock_lastfm_obj = Mock()
+        mock_lastfm_obj.get_top_tags.return_value = []
+        # Seed the cache directly to avoid a real network call.
+        client.genre_cache["track.artist-title"] = ["hip-hop"]
+
+        result = client._last_lookup("track", Mock(), "artist", "title")
+        assert result == [], (
+            "'hip-hop' must be normalized to 'hip hop' then filtered by ignorelist"
+        )

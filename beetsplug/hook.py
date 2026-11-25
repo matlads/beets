@@ -1,17 +1,3 @@
-# This file is part of beets.
-# Copyright 2015, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Allows custom commands to be run when an event is emitted by beets"""
 
 from __future__ import annotations
@@ -20,9 +6,23 @@ import os
 import shlex
 import string
 import subprocess
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from beets.events import ALL_EVENTS
 from beets.plugins import BeetsPlugin
+
+if TYPE_CHECKING:
+    from beets.events import EventType
+
+
+def _split_command(command: str) -> list[str]:
+    """Split a hook command into argv, treating '\\' as a path separator on Windows."""
+    lex = shlex.shlex(command, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""  # shlex.split does this; raw shlex defaults to '#'
+    if os.name == "nt":
+        lex.escape = ""
+    return list(lex)
 
 
 class BytesToStrFormatter(string.Formatter):
@@ -44,7 +44,7 @@ class BytesToStrFormatter(string.Formatter):
 class HookPlugin(BeetsPlugin):
     """Allows custom commands to be run when an event is emitted by beets"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         self.config.add({"hooks": []})
@@ -54,13 +54,13 @@ class HookPlugin(BeetsPlugin):
         for hook_index in range(len(hooks)):
             hook = self.config["hooks"][hook_index]
 
-            hook_event = hook["event"].as_str()
+            hook_event: EventType = hook["event"].as_choice(choices=ALL_EVENTS)
             hook_command = hook["command"].as_str()
 
             self.create_and_register_hook(hook_event, hook_command)
 
-    def create_and_register_hook(self, event, command):
-        def hook_function(**kwargs):
+    def create_and_register_hook(self, event: EventType, command: str) -> None:
+        def hook_function(**kwargs) -> None:
             if command is None or len(command) == 0:
                 self._log.error('invalid command "{}"', command)
                 return
@@ -70,7 +70,7 @@ class HookPlugin(BeetsPlugin):
             formatter = BytesToStrFormatter()
             command_pieces = [
                 formatter.format(piece, event=event, **kwargs)
-                for piece in shlex.split(command)
+                for piece in _split_command(command)
             ]
 
             self._log.debug(
@@ -88,4 +88,4 @@ class HookPlugin(BeetsPlugin):
             except OSError as exc:
                 self._log.error("hook for {} failed: {}", event, exc)
 
-        self.register_listener(event, hook_function)
+        self.register_listener(event, hook_function)  # type: ignore[arg-type]

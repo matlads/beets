@@ -1,28 +1,12 @@
-# This file is part of beets.
-# Copyright 2023, Max Rumpf.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Test the advancedrewrite plugin for various configurations."""
 
 import pytest
 
-from beets.test.helper import PluginTestCase
+from beets.test.helper import PluginTestHelper
 from beets.ui import UserError
 
-PLUGIN_NAME = "advancedrewrite"
 
-
-class AdvancedRewritePluginTest(PluginTestCase):
+class TestAdvancedRewritePlugin(PluginTestHelper):
     plugin = "advancedrewrite"
     preload_plugin = False
 
@@ -68,12 +52,12 @@ class AdvancedRewritePluginTest(PluginTestCase):
             )
 
             # Assert that all replacements were applied to item_a
-            assert "이달의 소녀 오드아이써클" == item_a.artist
-            assert "LOONA / ODD EYE CIRCLE" == item_a.artist_sort
-            assert "LOONA / ODD EYE CIRCLE" == item_a.albumartist_sort
+            assert item_a.artist == "이달의 소녀 오드아이써클"
+            assert item_a.artist_sort == "LOONA / ODD EYE CIRCLE"
+            assert item_a.albumartist_sort == "LOONA / ODD EYE CIRCLE"
 
             # Assert that no replacements were applied to item_b
-            assert "ODD EYE CIRCLE" == item_b.artist
+            assert item_b.artist == "ODD EYE CIRCLE"
 
     def test_advanced_rewrite_example_with_multi_valued_field(self):
         with self.configure_plugin(

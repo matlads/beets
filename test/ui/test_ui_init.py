@@ -1,28 +1,15 @@
-# This file is part of beets.
-# Copyright 2016, Adrian Sampson.
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files (the
-# "Software"), to deal in the Software without restriction, including
-# without limitation the rights to use, copy, modify, merge, publish,
-# distribute, sublicense, and/or sell copies of the Software, and to
-# permit persons to whom the Software is furnished to do so, subject to
-# the following conditions:
-#
-# The above copyright notice and this permission notice shall be
-# included in all copies or substantial portions of the Software.
-
 """Test module for file ui/__init__.py"""
 
-import os
-import shutil
+import sqlite3
 import unittest
 from copy import deepcopy
+from pathlib import Path
 from random import random
 
-from beets import config, ui
+import pytest
+
+from beets import ui
 from beets.exceptions import UserError
-from beets.test import _common
 from beets.test.helper import BeetsTestCase, IOMixin
 
 
@@ -87,36 +74,40 @@ class InputMethodsTest(IOMixin, unittest.TestCase):
 
 
 class ParentalDirCreation(IOMixin, BeetsTestCase):
+    def test_memory_path_skips_creation_prompt(self):
+        ui._ensure_db_directory_exists(Path(":memory:"))
+        assert not self.io.getoutput()
+
     def test_create_yes(self):
-        non_exist_path = _common.os.fsdecode(
-            os.path.join(self.temp_dir, b"nonexist", str(random()).encode())
-        )
+        non_exist_path = self.temp_path / "nonexist" / str(random())
         # Deepcopy instead of recovering because exceptions might
         # occur; wish I can use a golang defer here.
-        test_config = deepcopy(config)
-        test_config["library"] = non_exist_path
+        test_config = deepcopy(self.config)
+        test_config["library"] = str(non_exist_path)
         self.io.addinput("y")
         lib = ui._open_library(test_config)
         lib._close()
 
     def test_create_no(self):
-        non_exist_path_parent = _common.os.fsdecode(
-            os.path.join(self.temp_dir, b"nonexist")
-        )
-        non_exist_path = _common.os.fsdecode(
-            os.path.join(non_exist_path_parent.encode(), str(random()).encode())
-        )
-        test_config = deepcopy(config)
-        test_config["library"] = non_exist_path
+        non_exist_path_parent = self.temp_path / "nonexist"
+        non_exist_path = non_exist_path_parent / str(random())
+        test_config = deepcopy(self.config)
+        test_config["library"] = str(non_exist_path)
 
         self.io.addinput("n")
-        try:
-            lib = ui._open_library(test_config)
-        except UserError:
-            if os.path.exists(non_exist_path_parent):
-                shutil.rmtree(non_exist_path_parent)
-                raise OSError("Parent directories should not be created.")
-        else:
-            if lib:
-                lib._close()
-            raise OSError("Parent directories should not be created.")
+        with pytest.raises(UserError):
+            ui._open_library(test_config)
+        assert not non_exist_path_parent.exists()
+
+
+@pytest.mark.parametrize(
+    "sqlite_message",
+    ["unable to open database file", "attempt to write a readonly database"],
+)
+def test_open_library_permissions_hint(monkeypatch, config, sqlite_message):
+    def boom(*_a, **_k):
+        raise sqlite3.OperationalError(sqlite_message)
+
+    monkeypatch.setattr("beets.library.Library", boom)
+    with pytest.raises(UserError, match="permissions"):
+        ui._open_library(config)

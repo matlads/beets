@@ -6,16 +6,16 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tomllib
 from collections.abc import Callable
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from io import StringIO
 from pathlib import Path
 from typing import NamedTuple, TypeAlias
 
 import click
-import tomli
 from packaging.version import Version, parse
 from sphinx.ext import intersphinx
 
@@ -54,7 +54,7 @@ class Ref(NamedTuple):
         if len(line_parts := line.split(" ", 1)) == 1:
             return cls(line, None, None)
 
-        id, path_with_name = line_parts
+        id_, path_with_name = line_parts
         parts = [p.strip() for p in path_with_name.split(":", 1)]
 
         if len(parts) == 1:
@@ -62,7 +62,7 @@ class Ref(NamedTuple):
         else:
             name, path = parts
 
-        return cls(id, path, name)
+        return cls(id_, path, name)
 
     @property
     def url(self) -> str:
@@ -101,8 +101,12 @@ def create_rst_replacements() -> list[Replacement]:
     def make_ref_link(ref_id: str, name: str | None = None) -> str:
         if ref_id.endswith("-cmd"):
             name = f"{ref_id.removesuffix('-cmd')} command"
-        ref = refs[ref_id]
-        return rf"`{name or ref.name} <{ref.url}>`_"
+        try:
+            ref = refs[ref_id]
+        except KeyError:
+            return f"``{name or ref_id}``"
+        else:
+            return rf"`{name or ref.name} <{ref.url}>`_"
 
     commands = "|".join(r.split("-")[0] for r in refs if r.endswith("-cmd"))
     plugins = "|".join(
@@ -117,7 +121,7 @@ def create_rst_replacements() -> list[Replacement]:
         #    |BeetsPlugin| -> :class:`beets.plugins.BeetsPlugin`
         (r"\|\w[^ ]*\|", lambda m: explicit_replacements.get(m[0], m[0])),
         # Replace Sphinx directives by documentation URLs, e.g.,
-        #   :ref:`/plugins/autobpm` -> [AutoBPM Plugin](DOCS/plugins/autobpm.html)  # noqa: E501
+        #   :ref:`/plugins/autobpm` -> [AutoBPM Plugin](DOCS/plugins/autobpm.html)
         #   :ref:`list-cmd` -> [list command](DOCS/reference/cli.html#list-cmd)
         (
             r":(?:ref|doc|class|conf):`+~?(?:([^`<]+)<)?/?([\w.:/_-]+)>?`+",
@@ -152,7 +156,7 @@ def update_docs_config(text: str, new: Version) -> str:
 
 
 def update_changelog(text: str, new: Version) -> str:
-    new_header = f"{new} ({datetime.now(timezone.utc).date():%B %d, %Y})"
+    new_header = f"{new} ({datetime.now(UTC).date():%B %d, %Y})"
     return re.sub(
         # do not match if the new version is already present
         r"\nUnreleased\n--+\n",
@@ -205,7 +209,7 @@ def validate_new_version(
 ) -> Version:
     """Validate the version is newer than the current one."""
     with PYPROJECT.open("rb") as f:
-        current = parse(tomli.load(f)["tool"]["poetry"]["version"])
+        current = parse(tomllib.load(f)["project"]["version"])
 
     if not value > current:
         msg = f"version must be newer than {current}"
@@ -256,7 +260,7 @@ def changelog_as_markdown(rst: str) -> str:
 
 
 @click.group()
-def cli():
+def cli() -> None:
     pass
 
 
@@ -268,7 +272,7 @@ def bump(version: Version) -> None:
 
 
 @cli.command()
-def changelog():
+def changelog() -> None:
     """Get the most recent version's changelog as Markdown."""
     if changelog := get_changelog_contents():
         try:
