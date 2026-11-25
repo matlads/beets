@@ -332,14 +332,14 @@ var AppView = Backbone.View.extend({
     },
     playPrevious: function() {
         // Try to play the previous track.
-        var idx = this.shownItems.indexOf(this.playItem);
+        var idx = this.shownItems.indexOf(this.playingItem);
         if (idx == -1) {
             // Not in current list.
             return;
         }
         var previousIdx = idx - 1;
         if (previousIdx < 0) {
-            // End of list.
+            // Start of list.
             return;
         }
         this.playItem(this.shownItems.at(previousIdx));
